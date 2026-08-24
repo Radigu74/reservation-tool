@@ -441,7 +441,7 @@ async function renderStaff(business, access) {
             <form id="staffForm" class="stacked-form">
               <label>Display name<input id="staffName" required placeholder="Jane Tan"></label>
               <label>Biography<textarea id="staffBio" rows="3"></textarea></label>
-              <label>Timezone<input id="staffTimezone" value="Asia/Kuala_Lumpur" required></label>
+              <label>Timezone<select id="staffTimezone" required><option>Asia/Kuala_Lumpur</option><option>Asia/Singapore</option><option>Asia/Manila</option><option>UTC</option></select><small>Choose the timezone used for this person's calendar.</small></label>
               <label>TerraPeak login email<input id="staffLoginEmail" type="email" placeholder="teacher@example.com"><small>The profile links automatically when this team member next opens Reservations.</small></label>
               <label class="check-label"><input id="staffPublished" type="checkbox"> Publish staff profile</label>
               <button type="submit">Create staff member</button>

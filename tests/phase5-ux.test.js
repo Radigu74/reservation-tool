@@ -78,6 +78,17 @@ test('centre holidays block teacher calendars and protect registered classes', a
   assert.match(migration, /status='cancelled',is_published=false/)
 })
 
+test('staff timezones use supported calendar identifiers', async () => {
+  const source = await read('../src/universal-booking-admin.js')
+  const migration = await read('../supabase/migrations/20260824120000_validate_staff_timezones.sql')
+  assert.match(source, /<select id="staffTimezone" required>/)
+  assert.match(source, /<option>Asia\/Manila<\/option>/)
+  assert.doesNotMatch(source, /<input id="staffTimezone"/)
+  assert.match(migration, /pg_catalog\.pg_timezone_names/)
+  assert.match(migration, /Asia\/Manila/)
+  assert.match(migration, /before insert or update of timezone/)
+})
+
 test('staff profiles can be pre-linked to verified TerraPeak logins', async () => {
   const source = await read('../src/universal-booking-admin.js')
   const migration = await read('../supabase/migrations/20260819073000_staff_account_linking.sql')
