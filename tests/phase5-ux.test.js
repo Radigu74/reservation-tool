@@ -42,8 +42,8 @@ test('staff availability is view-only while planners retain management controls'
 
 test('restaurant-only settings are rendered only when a restaurant service exists', async () => {
   const source = await read('../src/restaurant-settings.js')
-  assert.match(source, /\$\{service \? `<section class="panel"><h2>Restaurant booking service/)
-  assert.match(source, /if \(service\) document\.querySelector\('#brandingForm'\)/)
+  assert.match(source, /\$\{isRestaurant&&restaurant\?`<section class="panel">/)
+  assert.match(source, /if\(isRestaurant&&restaurant\)\$\('#restaurantForm'\)/)
 })
 
 test('cohort service editing includes the complete future timetable', async () => {
