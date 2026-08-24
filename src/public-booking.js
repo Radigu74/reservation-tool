@@ -23,6 +23,19 @@ const businessTypeLabel = business => {
   return BUSINESS_TYPE_LABELS[type] || BUSINESS_TYPE_LABELS.general
 }
 const app = () => document.querySelector('#app')
+const customFieldName = field => `custom_${field.id}`
+const customFieldOptions = field => String(field.field_options || '').split(/\r?\n/).map(value => value.trim()).filter(Boolean)
+const customFieldMarkup = field => {
+  const name = customFieldName(field), required = field.is_required ? ' required' : '', label = esc(field.field_label)+(field.is_required ? ' *' : '')
+  if (field.field_type === 'textarea') return `<label>${label}<textarea name="${name}" maxlength="2000"${required}></textarea></label>`
+  if (field.field_type === 'dropdown') return `<label>${label}<select name="${name}"${required}><option value="">Select</option>${customFieldOptions(field).map(value => `<option value="${esc(value)}">${esc(value)}</option>`).join('')}</select></label>`
+  if (field.field_type === 'checkbox') return `<label class="check-label"><input name="${name}" type="checkbox"${required}> ${label}</label>`
+  return `<label>${label}<input name="${name}" maxlength="500"${required}></label>`
+}
+const customFieldAnswers = (form, fields) => Object.fromEntries(fields.map(field => {
+  const input = form.elements[customFieldName(field)]
+  return [String(field.id), field.field_type === 'checkbox' ? input.checked : input.value]
+}))
 
 async function start() {
   document.body.classList.add('public-booking-page')
@@ -123,15 +136,29 @@ async function scheduledServicePage(business,service){
 async function cohortServicePage(business,service){
   const today=new Date(), max=new Date();max.setDate(max.getDate()+60)
   const crumb='<a href="/book/'+esc(business.business_slug)+'">Services</a><span>/</span><span>'+esc(service.name)+'</span>'
-  const [{data:availability=[]},{data:sessions=[]}]=await Promise.all([
+  const [{data:availability=[]},{data:sessions=[]},{data:customerFields=[]}]=await Promise.all([
     supabase.rpc('get_public_cohort_availability',{p_business_slug:business.business_slug}),
-    supabase.rpc('get_public_scheduled_sessions',{p_business_slug:business.business_slug,p_service_slug:service.slug,p_from_date:dateValue(today),p_to_date:dateValue(max)})
+    supabase.rpc('get_public_scheduled_sessions',{p_business_slug:business.business_slug,p_service_slug:service.slug,p_from_date:dateValue(today),p_to_date:dateValue(max)}),
+    supabase.rpc('get_public_booking_custom_fields',{p_business_slug:business.business_slug})
   ])
+  const customFields=customerFields.filter(field=>!field.system_key&&String(field.field_label).trim().toLowerCase()!=='student name')
   const cohort=availability.find(item=>item.service_id===service.id), remaining=cohort?.remaining??0
   const sessionList=sessions.length?sessions.map(item=>'<article class="session-choice static"><strong>'+new Intl.DateTimeFormat(undefined,{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit',timeZone:item.staff_timezone}).format(new Date(item.starts_at))+'</strong><span>'+esc(item.staff_name)+'</span></article>').join(''):'<p>No upcoming classes are published yet.</p>'
-  shell(business,'<section class="booking-hero compact"><p class="booking-kicker">Continuing class</p><h1>'+esc(service.name)+'</h1><p>'+esc(service.description||'Send an enquiry for a place in this continuing class.')+'</p><p><strong>'+remaining+' of '+service.capacity+' enquiry places available</strong></p><p><strong>Package:</strong> '+priceLabel(service)+'. The class continues on every published timetable day; this price covers '+Number(service.price_session_count||1)+' sessions.</p></section><section class="calendar-panel scheduled-calendar"><div><h2>Upcoming classes</h2><p>The class runs on the centre’s published timetable. Individual classes may be postponed or cancelled by the centre.</p></div><div class="session-grid">'+sessionList+'</div></section>'+(remaining>0?'<form id="cohortEnrollmentForm" class="booking-form"><h2>Send an enrolment enquiry</h2><p>A staff member will contact you after this request. Enrolment is final only after you have spoken with the centre.</p><div class="form-grid"><label>Parent or guardian name<input name="guardianName" required maxlength="200"></label><label>Student name<input name="studentName" required maxlength="200"></label><label>Email<input name="email" type="email" maxlength="320"></label><label>Phone<input name="phone" required maxlength="50"></label><label>Student date of birth<input name="dateOfBirth" type="date"></label><label>School year or grade<input name="schoolGrade" maxlength="100"></label><label>Preferred joining date<input name="joinsOn" type="date" min="'+dateValue(today)+'" value="'+dateValue(today)+'" required></label></div><label>Learning needs or questions<textarea name="notes" maxlength="2000"></textarea></label><label class="check-label"><input name="consent" type="checkbox" required> I agree that the centre may contact me about this enquiry.</label><button class="booking-confirm" type="submit">Send enquiry</button><p id="cohortMessage" role="status"></p></form>':'<section class="booking-form"><h2>This class is full</h2><p>Please contact the centre about a waiting list.</p></section>'),crumb)
+  const enquiryForm=remaining>0?`<form id="cohortEnrollmentForm" class="booking-form">
+    <h2>Send an enrolment enquiry</h2><p>A staff member will contact you after this request. Enrolment is final only after you have spoken with the centre.</p>
+    <div class="form-grid"><label>Parent or guardian name<input name="guardianName" required maxlength="200"></label><label>Student name<input name="studentName" required maxlength="200"></label><label>Email<input name="email" type="email" maxlength="320"></label><label>Phone<input name="phone" required maxlength="50"></label><label>Student date of birth<input name="dateOfBirth" type="date"></label><label>School year or grade<input name="schoolGrade" maxlength="100"></label><label>Preferred joining date<input name="joinsOn" type="date" min="${dateValue(today)}" value="${dateValue(today)}" required></label>${customFields.map(customFieldMarkup).join('')}</div>
+    <label>Learning needs or questions<textarea name="notes" maxlength="2000"></textarea></label><label class="check-label"><input name="consent" type="checkbox" required> I agree that the centre may contact me about this enquiry.</label><button class="booking-confirm" type="submit">Send enquiry</button><p id="cohortMessage" role="status"></p></form>`:'<section class="booking-form"><h2>This class is full</h2><p>Please contact the centre about a waiting list.</p></section>'
+  shell(business,'<section class="booking-hero compact"><p class="booking-kicker">Continuing class</p><h1>'+esc(service.name)+'</h1><p>'+esc(service.description||'Send an enquiry for a place in this continuing class.')+'</p><p><strong>'+remaining+' of '+service.capacity+' enquiry places available</strong></p><p><strong>Package:</strong> '+priceLabel(service)+'. The class continues on every published timetable day; this price covers '+Number(service.price_session_count||1)+' sessions.</p></section><section class="calendar-panel scheduled-calendar"><div><h2>Upcoming classes</h2><p>The class runs on the centre’s published timetable. Individual classes may be postponed or cancelled by the centre.</p></div><div class="session-grid">'+sessionList+'</div></section>'+enquiryForm,crumb)
   const form=document.querySelector('#cohortEnrollmentForm');if(!form)return
-  form.onsubmit=async event=>{event.preventDefault();const values=new FormData(form),button=form.querySelector('[type="submit"]'),message=document.querySelector('#cohortMessage');button.disabled=true;message.textContent='Sending enquiry…';const {data,error}=await supabase.rpc('create_public_class_enquiry',{p_business_slug:business.business_slug,p_service_slug:service.slug,p_guardian_name:values.get('guardianName'),p_student_name:values.get('studentName'),p_customer_email:values.get('email')||null,p_customer_phone:values.get('phone'),p_student_date_of_birth:values.get('dateOfBirth')||null,p_school_grade:values.get('schoolGrade')||null,p_joins_on:values.get('joinsOn'),p_notes:values.get('notes')||null,p_consent_to_contact:values.get('consent')==='on'});button.disabled=false;if(error){message.textContent=error.message.includes('enough enquiry places')?'This class no longer has an enquiry place available. Please contact the centre.':'Your enquiry could not be sent.';return}form.innerHTML='<div class="booking-success"><p class="booking-kicker">Enquiry received</p><h2>Thank you, '+esc(values.get('guardianName'))+'.</h2><p>A staff member will contact you. Final enrolment happens only after that conversation.</p><p>Your enquiry reference is <strong>'+esc(data[0].reference)+'</strong>. Save it together with the phone number you entered so you can check or withdraw this request below.</p></div>'}
+  form.onsubmit=async event=>{
+    event.preventDefault()
+    const values=new FormData(form),button=form.querySelector('[type="submit"]'),message=document.querySelector('#cohortMessage')
+    button.disabled=true;message.textContent='Sending enquiry…'
+    const {data,error}=await supabase.rpc('create_public_class_enquiry',{p_business_slug:business.business_slug,p_service_slug:service.slug,p_guardian_name:values.get('guardianName'),p_student_name:values.get('studentName'),p_customer_email:values.get('email')||null,p_customer_phone:values.get('phone'),p_student_date_of_birth:values.get('dateOfBirth')||null,p_school_grade:values.get('schoolGrade')||null,p_joins_on:values.get('joinsOn'),p_notes:values.get('notes')||null,p_consent_to_contact:values.get('consent')==='on',p_custom_data:customFieldAnswers(form,customFields)})
+    button.disabled=false
+    if(error){message.textContent=error.message.includes('enough enquiry places')?'This class no longer has an enquiry place available. Please contact the centre.':error.message.includes('required customer form')?'Please complete all required Customer Form fields.':'Your enquiry could not be sent.';return}
+    form.innerHTML='<div class="booking-success"><p class="booking-kicker">Enquiry received</p><h2>Thank you, '+esc(values.get('guardianName'))+'.</h2><p>A staff member will contact you. Final enrolment happens only after that conversation.</p><p>Your enquiry reference is <strong>'+esc(data[0].reference)+'</strong>. Save it together with the phone number you entered so you can check or withdraw this request below.</p></div>'
+  }
 }
 function calendarPage(business,service,staff,assignment){
   const today=new Date(), max=new Date(); max.setDate(max.getDate()+60)
