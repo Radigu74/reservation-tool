@@ -42,8 +42,8 @@ test('staff availability is view-only while planners retain management controls'
 
 test('restaurant-only settings are rendered only when a restaurant service exists', async () => {
   const source = await read('../src/restaurant-settings.js')
-  assert.match(source, /\$\{service \? `<section class="panel"><h2>Restaurant booking service/)
-  assert.match(source, /if \(service\) document\.querySelector\('#brandingForm'\)/)
+  assert.match(source, /\$\{isRestaurant&&restaurant\?`<section class="panel">/)
+  assert.match(source, /if\(isRestaurant&&restaurant\)\$\('#restaurantForm'\)/)
 })
 
 test('cohort service editing includes the complete future timetable', async () => {
@@ -97,6 +97,18 @@ test('class signup is an enquiry with parent self-service', async () => {
   assert.match(source, /manage_public_class_enquiry/)
   assert.match(admin, /Manage enquiries/)
   assert.match(migration, /contact_requested/)
+})
+
+test('learning centre enquiries render and retain saved Customer Form fields', async () => {
+  const source = await read('../src/public-booking.js')
+  const admin = await read('../src/universal-booking-admin.js')
+  const migration = await read('../supabase/migrations/20260824042453_learning_centre_customer_form_fields.sql')
+  assert.match(source, /get_public_booking_custom_fields/)
+  assert.match(source, /customFieldMarkup/)
+  assert.match(source, /p_custom_data:customFieldAnswers/)
+  assert.match(admin, /customAnswersMarkup/)
+  assert.match(migration, /add column if not exists custom_data jsonb/)
+  assert.match(migration, /Complete all required customer form fields/)
 })
 
 test('archived services remain discoverable and can be restored', async () => {

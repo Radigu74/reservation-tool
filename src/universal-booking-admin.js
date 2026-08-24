@@ -140,11 +140,12 @@ async function startUniversalBookingAdmin() {
 }
 
 async function renderServices(business, access) {
-  const [{ data: services, error }, { data: archivedServices, error: archivedError }, { data: staff, error: staffError }, { data: enrollments, error: enrollmentError }, { data: staffSubjects, error: subjectError }, { data: schedulePatterns, error: patternsError }, { data: weeklyRules, error: rulesError }] = await Promise.all([
+  const [{ data: services, error }, { data: archivedServices, error: archivedError }, { data: staff, error: staffError }, { data: enrollments, error: enrollmentError }, { data: customerFields, error: customerFieldsError }, { data: staffSubjects, error: subjectError }, { data: schedulePatterns, error: patternsError }, { data: weeklyRules, error: rulesError }] = await Promise.all([
     supabase.from('services').select('*').eq('business_id', business.id).eq('is_active', true).order('name'),
     supabase.from('services').select('id, name, slug, booking_type, updated_at').eq('business_id', business.id).eq('is_active', false).order('name'),
     supabase.from('staff_members').select('id, display_name, timezone, is_published').eq('business_id', business.id).eq('is_active', true).order('display_name'),
-    supabase.from('class_enrollments').select('id, service_id, reference, customer_name, guardian_name, customer_email, customer_phone, quantity, joins_on, status, enquiry_status, contact_requested, school_grade, notes, created_at').eq('business_id', business.id).order('created_at', { ascending: false }),
+    supabase.from('class_enrollments').select('id, service_id, reference, customer_name, guardian_name, customer_email, customer_phone, quantity, joins_on, status, enquiry_status, contact_requested, school_grade, notes, custom_data, created_at').eq('business_id', business.id).order('created_at', { ascending: false }),
+    supabase.from('booking_custom_fields').select('id, field_label').eq('business_id', business.id),
     supabase.from('staff_subjects').select('staff_id, subject').eq('business_id', business.id),
     supabase.from('service_schedule_patterns').select('id, service_id, staff_id, day_of_week, starts_at, ends_at').eq('business_id', business.id).eq('is_active', true).order('day_of_week'),
     supabase.from('availability_rules').select('staff_id, service_id, day_of_week, start_time, end_time, is_active').eq('business_id', business.id).eq('is_active', true)
@@ -153,10 +154,13 @@ async function renderServices(business, access) {
   if (archivedError) throw archivedError
   if (staffError) throw staffError
   if (enrollmentError) throw enrollmentError
+  if (customerFieldsError) throw customerFieldsError
   if (subjectError) throw subjectError
   if (patternsError) throw patternsError
   if (rulesError) throw rulesError
   const enrolledByService = enrollments.filter(item => ['pending', 'confirmed'].includes(item.status)).reduce((totals, item) => ({ ...totals, [item.service_id]: (totals[item.service_id] || 0) + item.quantity }), {})
+  const customerFieldLabels = Object.fromEntries(customerFields.map(field => [String(field.id), field.field_label]))
+  const customAnswersMarkup = item => Object.entries(item.custom_data || {}).map(([fieldId, value]) => `<small><strong>${escapeHtml(customerFieldLabels[fieldId] || 'Custom field')}:</strong> ${escapeHtml(typeof value === 'boolean' ? (value ? 'Yes' : 'No') : value)}</small>`).join('')
   const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
   const subjects = [...new Set([...staffSubjects.map(item => item.subject), ...services.map(item => item.subject).filter(Boolean)])].sort()
   const staffMap = Object.fromEntries(staff.map(person => [person.id, person]))
@@ -245,7 +249,7 @@ async function renderServices(business, access) {
     const items = enrollments.filter(item => item.service_id === service.id)
     const panel = document.getElementById('serviceEditPanel')
     panel.hidden = false
-    panel.innerHTML = `<div class="panel-heading"><div><p class="eyebrow">Enrolment enquiries</p><h2>${escapeHtml(service.name)}</h2></div><button type="button" class="secondary-button close-enquiries">Close</button></div><div class="card-list">${items.length ? items.map(item => `<article class="entity-card"><div><h3>${escapeHtml(item.customer_name)}</h3><p>Guardian: ${escapeHtml(item.guardian_name || 'Not provided')} · ${escapeHtml(item.customer_phone)}${item.customer_email ? ` · ${escapeHtml(item.customer_email)}` : ''}</p><small>${escapeHtml(item.reference)} · Preferred start ${item.joins_on}${item.school_grade ? ` · ${escapeHtml(item.school_grade)}` : ''}${item.contact_requested ? ' · Contact requested' : ''}</small>${item.notes ? `<small>${escapeHtml(item.notes)}</small>` : ''}</div><label>Status<select class="enquiry-status" data-id="${item.id}">${['new','contacted','accepted','declined','withdrawn'].map(status => `<option value="${status}" ${status === item.enquiry_status ? 'selected' : ''} ${status === 'withdrawn' ? 'disabled' : ''}>${status}</option>`).join('')}</select></label></article>`).join('') : '<p>No enquiries have been received.</p>'}</div>`
+    panel.innerHTML = `<div class="panel-heading"><div><p class="eyebrow">Enrolment enquiries</p><h2>${escapeHtml(service.name)}</h2></div><button type="button" class="secondary-button close-enquiries">Close</button></div><div class="card-list">${items.length ? items.map(item => `<article class="entity-card"><div><h3>${escapeHtml(item.customer_name)}</h3><p>Guardian: ${escapeHtml(item.guardian_name || 'Not provided')} · ${escapeHtml(item.customer_phone)}${item.customer_email ? ` · ${escapeHtml(item.customer_email)}` : ''}</p><small>${escapeHtml(item.reference)} · Preferred start ${item.joins_on}${item.school_grade ? ` · ${escapeHtml(item.school_grade)}` : ''}${item.contact_requested ? ' · Contact requested' : ''}</small>${customAnswersMarkup(item)}${item.notes ? `<small>${escapeHtml(item.notes)}</small>` : ''}</div><label>Status<select class="enquiry-status" data-id="${item.id}">${['new','contacted','accepted','declined','withdrawn'].map(status => `<option value="${status}" ${status === item.enquiry_status ? 'selected' : ''} ${status === 'withdrawn' ? 'disabled' : ''}>${status}</option>`).join('')}</select></label></article>`).join('') : '<p>No enquiries have been received.</p>'}</div>`
     panel.querySelector('.close-enquiries').onclick = () => { panel.hidden = true; panel.innerHTML = '' }
     panel.querySelectorAll('.enquiry-status').forEach(select => select.addEventListener('change', async () => {
       const { error } = await supabase.rpc('set_class_enquiry_status', { p_enquiry_id: select.dataset.id, p_enquiry_status: select.value })
