@@ -66,6 +66,15 @@ test('mapping metadata is explicitly service-role only', async () => {
   assert.match(sql, /grant select, insert, update[\s\S]*to service_role/i)
 })
 
+test('mapping privilege hardening overrides broad service-role default grants', async () => {
+  const sql = await read('supabase/migrations/20260908130000_reservation_booking_migration_map_privilege_hardening.sql')
+  for (const role of ['public', 'anon', 'authenticated', 'service_role']) {
+    assert.match(sql, new RegExp(`revoke all privileges on table public\\.reservation_booking_migrations from ${role}`, 'i'))
+  }
+  assert.match(sql, /grant select, insert, update on table public\.reservation_booking_migrations to service_role/i)
+  assert.doesNotMatch(sql, /grant[^;]*(delete|truncate|references|trigger)[^;]*service_role/i)
+})
+
 test('page modules no longer generate competing management navigation', async () => {
   const customerForm = await read('src/customer-form-admin.js')
   const settings = await read('src/restaurant-settings.js')
