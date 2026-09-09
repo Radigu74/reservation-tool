@@ -33,6 +33,8 @@ test('database owns field types and historical label snapshots', async () => {
   for (const type of ['text', 'textarea', 'dropdown', 'checkbox', 'email', 'phone', 'number', 'date']) assert.match(sql, new RegExp(`'${type}'`))
   assert.match(sql, /p_fields is null or jsonb_typeof\(p_fields\) <> 'array'/)
   assert.match(sql, /labels := labels \|\| jsonb_build_object\(field\.id::text, field\.field_label\)/)
+  assert.match(sql, /> \(case when field\.field_type = 'textarea' then 2000 else 500 end\) then/)
+  assert.doesNotMatch(sql, /> case when field\.field_type = 'textarea' then 2000 else 500 end then/)
   assert.doesNotMatch(sql, /p_custom_data->'_field_labels'/)
   assert.match(sql, /create or replace function public\.create_public_restaurant_reservation[\s\S]*normalize_public_customer_form_data/)
   assert.match(sql, /create or replace function public\.create_public_class_enquiry[\s\S]*array\['student name'\]::text\[\]/)

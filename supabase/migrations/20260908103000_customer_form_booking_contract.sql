@@ -74,7 +74,7 @@ begin
       perform text_value::date;
     end if;
     if value is not null and value <> 'null'::jsonb then
-      if length(coalesce(text_value, value::text)) > case when field.field_type = 'textarea' then 2000 else 500 end then
+      if length(coalesce(text_value, value::text)) > (case when field.field_type = 'textarea' then 2000 else 500 end) then
         raise exception 'Customer Form answer is too long' using errcode = '22023';
       end if;
       result := result || jsonb_build_object(field.id::text, value);
