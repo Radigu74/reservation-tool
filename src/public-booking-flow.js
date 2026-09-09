@@ -1,33 +1,36 @@
 import { supabase } from './supabaseclient.js'
+import { resolveReservationsConfiguration } from './reservation-configuration.js'
+import { loadPublicReservationsConfiguration } from './reservation-settings-access.js'
 
 const route = window.location.pathname.split('/').filter(Boolean)
 const businessSlug = route[0]?.toLowerCase() === 'book' ? route[1] : null
 
-if (businessSlug) installBookingFlowWording()
+if (businessSlug) installBookingFlowWording().catch(showConfigurationError)
 
-const TYPE_WORDING = {
-  physiotherapy: { label: 'Physiotherapy', confirm: 'Your physiotherapy appointment has been reserved.' },
-  dental: { label: 'Dental', confirm: 'Your dental appointment has been reserved.' },
-  salon: { label: 'Salon / beauty', confirm: 'Your appointment has been reserved.' },
-  learning_centre: { label: 'Learning centre', confirm: 'Your place has been reserved.' },
-  restaurant: { label: 'Restaurant', confirm: null },
-  general: { label: 'Appointment', confirm: 'Your appointment has been reserved.' },
+function showConfigurationError(error) {
+  const app = document.querySelector('#app')
+  if (!app) return
+  const message = document.createElement('p')
+  message.className = 'booking-error'
+  message.setAttribute('role', 'alert')
+  message.textContent = error?.message || 'Booking configuration could not be loaded.'
+  app.prepend(message)
 }
 
 async function installBookingFlowWording() {
-  const { data: businesses = [] } = await supabase.rpc('get_public_booking_business', { p_business_slug: businessSlug })
+  const { data: businesses = [], error } = await supabase.rpc('get_public_booking_business', { p_business_slug: businessSlug })
+  if (error) throw new Error(`Booking business could not be loaded: ${error.message}`)
   const business = businesses?.[0]
   if (!business?.id) return
 
-  const type = String(business.business_type || 'general').toLowerCase()
-  const wording = TYPE_WORDING[type] || TYPE_WORDING.general
-  const isRestaurantBusiness = type === 'restaurant'
-
-  const { data: settings } = await supabase
-    .from('reservation_business_settings')
-    .select('booking_behavior,confirmation_message')
-    .eq('business_id', business.id)
-    .maybeSingle()
+  const settings = await loadPublicReservationsConfiguration(supabase, businessSlug)
+  const configuration = resolveReservationsConfiguration({
+    templateKey: settings?.template_key,
+    businessType: business.business_type,
+    terminology: settings?.terminology,
+    capabilities: settings?.capabilities,
+  })
+  const isRestaurantBusiness = configuration.templateKey === 'restaurant'
 
   const requestMode = settings?.booking_behavior === 'request'
 
@@ -77,7 +80,8 @@ async function installBookingFlowWording() {
       const successLabel = requestMode ? 'Appointment request received' : 'Booking confirmed'
       if (successKicker && successKicker.textContent !== successLabel) successKicker.textContent = successLabel
       const restaurantConfirmation = paragraphs.find(p => /your table for .* has been reserved/i.test(p.textContent))
-      if (restaurantConfirmation && restaurantConfirmation.textContent !== wording.confirm) restaurantConfirmation.textContent = wording.confirm
+      const confirmation = `Your ${configuration.terminology.bookingSingular.toLowerCase()} has been reserved.`
+      if (restaurantConfirmation && restaurantConfirmation.textContent !== confirmation) restaurantConfirmation.textContent = confirmation
     }
 
     if (requestMode) {

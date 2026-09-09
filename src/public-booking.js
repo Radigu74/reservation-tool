@@ -1,4 +1,8 @@
 import { supabase } from './supabaseclient.js'
+import { resolveReservationsConfiguration } from './reservation-configuration.js'
+import { formValues, normalizeCustomerForm, serializeCustomerFormAnswers, validateCustomerForm, renderCustomerFormField } from './customer-form-contract.js'
+import { buildCustomerJourney, isCustomerVisibleService, resolveJourneyConfiguration } from './reservation-journey.js'
+import { loadPublicReservationsConfiguration } from './reservation-settings-access.js'
 
 const route = location.pathname.split('/').filter(Boolean)
 
@@ -9,33 +13,14 @@ const priceLabel = (service, value = service.price) => {
   if (!formatted) return ''
   return Number(service.price_session_count || 1) > 1 ? formatted+' for '+service.price_session_count+' sessions' : formatted
 }
-const BUSINESS_TYPE_LABELS = {
-  physiotherapy: 'Physiotherapy',
-  dental: 'Dental',
-  salon: 'Salon / beauty',
-  learning_centre: 'Learning centre',
-  restaurant: 'Restaurant',
-  general: 'Appointment',
-}
-
 const businessTypeLabel = business => {
-  const type = String(business?.business_type || 'general').toLowerCase()
-  return BUSINESS_TYPE_LABELS[type] || BUSINESS_TYPE_LABELS.general
+  return business?.reservationConfiguration?.terminology?.serviceSingular || 'Service'
 }
 const app = () => document.querySelector('#app')
 const customFieldName = field => `custom_${field.id}`
 const customFieldOptions = field => String(field.field_options || '').split(/\r?\n/).map(value => value.trim()).filter(Boolean)
-const customFieldMarkup = field => {
-  const name = customFieldName(field), required = field.is_required ? ' required' : '', label = esc(field.field_label)+(field.is_required ? ' *' : '')
-  if (field.field_type === 'textarea') return `<label>${label}<textarea name="${name}" maxlength="2000"${required}></textarea></label>`
-  if (field.field_type === 'dropdown') return `<label>${label}<select name="${name}"${required}><option value="">Select</option>${customFieldOptions(field).map(value => `<option value="${esc(value)}">${esc(value)}</option>`).join('')}</select></label>`
-  if (field.field_type === 'checkbox') return `<label class="check-label"><input name="${name}" type="checkbox"${required}> ${label}</label>`
-  return `<label>${label}<input name="${name}" maxlength="500"${required}></label>`
-}
-const customFieldAnswers = (form, fields) => Object.fromEntries(fields.map(field => {
-  const input = form.elements[customFieldName(field)]
-  return [String(field.id), field.field_type === 'checkbox' ? input.checked : input.value]
-}))
+const customFieldMarkup = field => renderCustomerFormField(field, customFieldName(field))
+const customFieldAnswers = (form, fields) => serializeCustomerFormAnswers(fields, formValues(form, normalizeCustomerForm(fields)))
 
 async function start() {
   document.body.classList.add('public-booking-page')
@@ -45,9 +30,19 @@ async function start() {
   const {data:businessRows}=await supabase.rpc('get_public_booking_business',{p_business_slug:businessSlug})
   const business=businessRows?.[0]
   if(!business) return fail('Booking page not found.')
+  let settings
+  try { settings = await loadPublicReservationsConfiguration(supabase, businessSlug) }
+  catch { return fail('Booking configuration could not be loaded.') }
+  business.reservationConfiguration = resolveJourneyConfiguration({
+    templateKey: settings?.template_key,
+    businessType: business.business_type,
+    terminology: settings?.terminology,
+    capabilities: settings?.capabilities,
+  })
+  if (!serviceSlug && business.reservationConfiguration.capabilities.services === false) return capabilityDrivenEntry(business)
   document.title='Book with '+business.business_name
   if(!serviceSlug) return businessPage(business)
-  const {data:service}=await supabase.from('services').select('*').eq('business_id',business.id).ilike('slug',serviceSlug).eq('is_active',true).eq('is_published',true).maybeSingle()
+  const {data:service}=await supabase.from('services').select('*').eq('business_id',business.id).ilike('slug',serviceSlug).eq('is_active',true).eq('is_published',true).eq('is_internal',false).maybeSingle()
   if(!service) return fail('This service is not available.')
   if(service.booking_type==='restaurant') return restaurantServicePage(business,service)
   if(service.scheduling_mode==='scheduled') return scheduledServicePage(business,service)
@@ -64,9 +59,16 @@ function shell(business,content,crumb=''){
   setupBookingManager(business)
 }
 async function businessPage(business){
-  const [{data:services=[]},{data:cohorts=[]}]=await Promise.all([supabase.from('services').select('*').eq('business_id',business.id).eq('is_active',true).eq('is_published',true).order('name'),supabase.rpc('get_public_cohort_availability',{p_business_slug:business.business_slug})])
+  const [{data:services=[]},{data:cohorts=[]}]=await Promise.all([supabase.from('services').select('*').eq('business_id',business.id).eq('is_active',true).eq('is_published',true).eq('is_internal',false).order('name'),supabase.rpc('get_public_cohort_availability',{p_business_slug:business.business_slug})])
+  const visibleServices=services.filter(isCustomerVisibleService)
   const cohortMap=Object.fromEntries(cohorts.map(item=>[item.service_id,item]))
-  shell(business,'<section class="booking-hero"><p class="booking-kicker">Choose a service</p><h1>How can we help?</h1><p>Select a service to see the team and available times.</p></section><section class="booking-grid">'+(services.map(s=>{const cohort=cohortMap[s.id];return '<a class="booking-card" href="/book/'+esc(business.business_slug)+'/services/'+esc(s.slug)+'"><span class="booking-type">'+esc(businessTypeLabel(business))+'</span><h2>'+esc(s.name)+'</h2><p>'+esc(s.description||'')+'</p><div><span>'+(cohort?(cohort.is_full?'Class full':cohort.remaining+' place'+(cohort.remaining===1?'':'s')+' left'):s.duration_minutes+' min')+'</span><strong>'+priceLabel(s)+'</strong></div></a>'}).join('')||'<p>No services are published yet.</p>')+'</section>')
+  shell(business,'<section class="booking-hero"><p class="booking-kicker">Choose a service</p><h1>How can we help?</h1><p>Select a service to see the team and available times.</p></section><section class="booking-grid">'+(visibleServices.map(s=>{const cohort=cohortMap[s.id];return '<a class="booking-card" href="/book/'+esc(business.business_slug)+'/services/'+esc(s.slug)+'"><span class="booking-type">'+esc(businessTypeLabel(business))+'</span><h2>'+esc(s.name)+'</h2><p>'+esc(s.description||'')+'</p><div><span>'+(cohort?(cohort.is_full?'Class full':cohort.remaining+' place'+(cohort.remaining===1?'':'s')+' left'):s.duration_minutes+' min')+'</span><strong>'+priceLabel(s)+'</strong></div></a>'}).join('')||'<p>No services are published yet.</p>')+'</section>')
+}
+async function capabilityDrivenEntry(business) {
+  if (business.reservationConfiguration.capabilities.guestCount) {
+    return restaurantServicePage(business, { name: business.reservationConfiguration.terminology.bookingSingular })
+  }
+  return fail('Reservations are not configured for this business.')
 }
 async function servicePage(business,service){
   const {data:items=[]}=await supabase.from('staff_services').select('custom_duration_minutes,custom_price,staff_members!inner(*)').eq('service_id',service.id).eq('is_active',true)
@@ -76,7 +78,7 @@ async function servicePage(business,service){
 async function restaurantServicePage(business,service){
   const today=new Date(), max=new Date(); max.setDate(max.getDate()+60)
   const crumb='<a href="/book/'+esc(business.business_slug)+'">Services</a><span>/</span><span>'+esc(service.name)+'</span>'
-  shell(business,'<section class="booking-hero compact"><p class="booking-kicker">'+esc(businessTypeLabel(business))+'</p><h1>'+esc(service.name)+'</h1><p>'+esc(service.description||'Choose a date and available time for your table.')+'</p></section><section class="calendar-panel"><div><label for="bookingDate">Choose a date</label><input id="bookingDate" type="date" min="'+dateValue(today)+'" max="'+dateValue(max)+'" value="'+dateValue(today)+'"><p id="restaurantTimezone" class="timezone"></p></div><div><h2>Available times</h2><div id="availableSlots" class="slot-grid"></div></div></section><form id="publicBookingForm" class="booking-form" hidden><h2>Your details</h2><p id="selectedTime"></p><div class="form-grid"><label>Name<input name="name" required maxlength="200"></label><label>Phone<input name="phone" required maxlength="50"></label><label>Number of guests<input name="quantity" type="number" min="1" value="1" required></label></div><label>Special requests<textarea name="notes" maxlength="2000"></textarea></label><button class="booking-confirm" type="submit">Confirm reservation</button><p id="bookingMessage" role="status"></p></form>',crumb)
+  shell(business,'<section class="booking-hero compact"><p class="booking-kicker">'+esc(business.reservationConfiguration.terminology.bookingSingular)+'</p><h1>Choose a time</h1><p>Choose a date and available time.</p></section><section class="calendar-panel"><div><label for="bookingDate">Choose a date</label><input id="bookingDate" type="date" min="'+dateValue(today)+'" max="'+dateValue(max)+'" value="'+dateValue(today)+'"><p id="restaurantTimezone" class="timezone"></p></div><div><h2>Available times</h2><div id="availableSlots" class="slot-grid"></div></div></section><form id="publicBookingForm" class="booking-form" hidden><h2>Your details</h2><p id="selectedTime"></p><div class="form-grid"><label>Name<input name="name" required maxlength="200"></label><label>Phone<input name="phone" required maxlength="50"></label><label>Number of guests<input name="quantity" type="number" min="1" value="1" required></label></div><label>Special requests<textarea name="notes" maxlength="2000"></textarea></label><button class="booking-confirm" type="submit">Confirm reservation</button><p id="bookingMessage" role="status"></p></form>',crumb)
   const date=document.querySelector('#bookingDate'),slots=document.querySelector('#availableSlots'),form=document.querySelector('#publicBookingForm'),timezone=document.querySelector('#restaurantTimezone')
   let selected=null
   async function load(){
@@ -141,7 +143,7 @@ async function cohortServicePage(business,service){
     supabase.rpc('get_public_scheduled_sessions',{p_business_slug:business.business_slug,p_service_slug:service.slug,p_from_date:dateValue(today),p_to_date:dateValue(max)}),
     supabase.rpc('get_public_booking_custom_fields',{p_business_slug:business.business_slug})
   ])
-  const customFields=customerFields.filter(field=>!field.system_key&&String(field.field_label).trim().toLowerCase()!=='student name')
+  const customFields=normalizeCustomerForm(customerFields,{activeOnly:true}).filter(field=>!field.system_key&&String(field.field_label).trim().toLowerCase()!=='student name')
   const cohort=availability.find(item=>item.service_id===service.id), remaining=cohort?.remaining??0
   const sessionList=sessions.length?sessions.map(item=>'<article class="session-choice static"><strong>'+new Intl.DateTimeFormat(undefined,{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit',timeZone:item.staff_timezone}).format(new Date(item.starts_at))+'</strong><span>'+esc(item.staff_name)+'</span></article>').join(''):'<p>No upcoming classes are published yet.</p>'
   const enquiryForm=remaining>0?`<form id="cohortEnrollmentForm" class="booking-form">
@@ -152,7 +154,8 @@ async function cohortServicePage(business,service){
   const form=document.querySelector('#cohortEnrollmentForm');if(!form)return
   form.onsubmit=async event=>{
     event.preventDefault()
-    const values=new FormData(form),button=form.querySelector('[type="submit"]'),message=document.querySelector('#cohortMessage')
+    const values=new FormData(form),button=form.querySelector('[type="submit"]'),message=document.querySelector('#cohortMessage'),answers=customFieldAnswers(form,customFields),validation=validateCustomerForm(customFields,Object.fromEntries(Object.entries(answers).filter(([key])=>key!=='_field_labels')))
+    if(validation){message.textContent=validation;return}
     button.disabled=true;message.textContent='Sending enquiry…'
     const {data,error}=await supabase.rpc('create_public_class_enquiry',{p_business_slug:business.business_slug,p_service_slug:service.slug,p_guardian_name:values.get('guardianName'),p_student_name:values.get('studentName'),p_customer_email:values.get('email')||null,p_customer_phone:values.get('phone'),p_student_date_of_birth:values.get('dateOfBirth')||null,p_school_grade:values.get('schoolGrade')||null,p_joins_on:values.get('joinsOn'),p_notes:values.get('notes')||null,p_consent_to_contact:values.get('consent')==='on',p_custom_data:customFieldAnswers(form,customFields)})
     button.disabled=false
@@ -164,7 +167,8 @@ function calendarPage(business,service,staff,assignment){
   const today=new Date(), max=new Date(); max.setDate(max.getDate()+60)
   const avatar=staff.photo_url?'<img src="'+esc(staff.photo_url)+'" alt="">':esc(staff.display_name[0])
   const crumb='<a href="/book/'+esc(business.business_slug)+'">Services</a><span>/</span><a href="/book/'+esc(business.business_slug)+'/services/'+esc(service.slug)+'">'+esc(service.name)+'</a><span>/</span><span>'+esc(staff.display_name)+'</span>'
-  shell(business,'<section class="booking-profile"><div class="staff-avatar large">'+avatar+'</div><div><p class="booking-kicker">'+esc(service.name)+'</p><h1>'+esc(staff.display_name)+'</h1><p>'+esc(staff.bio||'')+'</p><span>'+(assignment.custom_duration_minutes||service.duration_minutes)+' min · '+priceLabel(service,assignment.custom_price??service.price)+'</span></div></section><section class="calendar-panel"><div><label for="bookingDate">Choose a date</label><input id="bookingDate" type="date" min="'+dateValue(today)+'" max="'+dateValue(max)+'" value="'+dateValue(today)+'"><p class="timezone">Times shown in '+esc(staff.timezone)+'</p></div><div><h2>Available times</h2><div id="availableSlots" class="slot-grid"></div></div></section><form id="publicBookingForm" class="booking-form" hidden><h2>Your details</h2><p id="selectedTime"></p><div class="form-grid"><label>Name<input name="name" required maxlength="200"></label><label>Email<input name="email" type="email" maxlength="320"></label><label>Phone<input name="phone" required maxlength="50"></label></div><label>Notes<textarea name="notes" maxlength="2000"></textarea></label><button class="booking-confirm" type="submit">Confirm booking</button><p id="bookingMessage" role="status"></p></form>',crumb)
+  const provider = business.reservationConfiguration.capabilities.teamResources ? '<section class="booking-profile"><div class="staff-avatar large">'+avatar+'</div><div><p class="booking-kicker">'+esc(service.name)+'</p><h1>'+esc(staff.display_name)+'</h1><p>'+esc(staff.bio||'')+'</p><span>'+(assignment.custom_duration_minutes||service.duration_minutes)+' min · '+priceLabel(service,assignment.custom_price??service.price)+'</span></div></section>' : ''
+  shell(business,provider+'<section class="calendar-panel"><div><label for="bookingDate">Choose a date</label><input id="bookingDate" type="date" min="'+dateValue(today)+'" max="'+dateValue(max)+'" value="'+dateValue(today)+'"><p class="timezone">Times shown in '+esc(staff.timezone)+'</p></div><div><h2>Available times</h2><div id="availableSlots" class="slot-grid"></div></div></section><form id="publicBookingForm" class="booking-form" hidden><h2>Your details</h2><p id="selectedTime"></p><div class="form-grid"><label>Name<input name="name" required maxlength="200"></label><label>Email<input name="email" type="email" maxlength="320"></label><label>Phone<input name="phone" required maxlength="50"></label></div><label>Notes<textarea name="notes" maxlength="2000"></textarea></label><button class="booking-confirm" type="submit">Confirm booking</button><p id="bookingMessage" role="status"></p></form>',crumb)
   const date=document.querySelector('#bookingDate'), slots=document.querySelector('#availableSlots'), form=document.querySelector('#publicBookingForm')
   let selected=null
   async function load(){

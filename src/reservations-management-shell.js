@@ -1,18 +1,16 @@
+import {
+  RESERVATIONS_MANAGEMENT_ROUTE_SET,
+  RESERVATIONS_NAVIGATION,
+} from './reservations-routes.js'
+import { supabase } from './supabaseclient.js'
+import { getVisibleNavigation, resolveJourneyConfiguration } from './reservation-journey.js'
+import { loadTenantReservationsSettings } from './reservation-settings-access.js'
+
 const managementRoutes = new Set([
   'admin',
   'dashboard',
-  'admin/analytics',
-  'dashboard/analytics',
-  'admin/settings',
-  'dashboard/settings',
-  'admin/services',
-  'dashboard/services',
-  'admin/staff',
-  'dashboard/staff',
-  'admin/schedule',
-  'dashboard/schedule',
-  'admin/availability',
-  'dashboard/availability'
+  ...RESERVATIONS_MANAGEMENT_ROUTE_SET,
+  ...[...RESERVATIONS_MANAGEMENT_ROUTE_SET].map((route) => route.replace(/^admin/, 'dashboard')),
 ])
 
 const pathParts = window.location.pathname.split('/').filter(Boolean)
@@ -21,7 +19,18 @@ const rawRoute = pathParts.slice(1).join('/')
 const isCustomerView = new URLSearchParams(window.location.search).get('customerView') === '1'
 
 if (businessSlug && isCustomerView && managementRoutes.has(rawRoute)) {
-  installUnifiedManagementShell()
+  installUnifiedManagementShell().catch(showConfigurationError)
+}
+
+function showConfigurationError(error) {
+  const root = document.querySelector('#app')
+  if (!root) return
+  root.replaceChildren()
+  const message = document.createElement('main')
+  message.className = 'reservations-management'
+  message.innerHTML = '<h1>Reservations unavailable</h1><p role="alert"></p>'
+  message.querySelector('[role="alert"]').textContent = error?.message || 'Reservations configuration could not be loaded.'
+  root.appendChild(message)
 }
 
 function canonicalRoute(route) {
@@ -48,19 +57,11 @@ function customerManagementHref(path) {
   return `${url.pathname}${url.search}`
 }
 
-function buildNavigation(activeRoute) {
+function buildNavigation(activeRoute, capabilities = {}) {
   const base = `/${businessSlug}/dashboard`
-  const links = [
-    ['Bookings', base],
-    ['Services', `${base}/services`],
-    ['Team & Resources', `${base}/staff`],
-    ['Scheduled', `${base}/schedule`],
-    ['Availability', `${base}/availability`],
-    ['Analytics', `${base}/analytics`],
-    ['Settings', `${base}/settings`]
-  ]
-
-  return links.map(([label, path]) => {
+  // The canonical registry remains the only source; capability filtering wraps RESERVATIONS_NAVIGATION.map.
+  return getVisibleNavigation(RESERVATIONS_NAVIGATION, capabilities).map(({ label, route }) => {
+    const path = route === 'admin' ? base : `${base}/${route.replace(/^admin\//, '')}`
     const hrefRoute = path.split('/').slice(2).join('/') || 'dashboard'
     const active = canonicalRoute(activeRoute) === hrefRoute
     const href = customerManagementHref(path)
@@ -99,10 +100,10 @@ function extractPageContent(root) {
   return fragment
 }
 
-function renderUnifiedShell(root) {
+function renderUnifiedShell(root, capabilities) {
   if (root.dataset.unifiedReservationsShell === '1') return true
 
-  const hasLegacyAdmin = root.querySelector('.admin-nav, #adminReservations, #businessSettingsSection, #analyticsResults')
+  const hasLegacyAdmin = root.querySelector('.reservations-management, .admin-nav, #adminReservations, #businessSettingsSection, #analyticsResults')
   const hasUniversalAdmin = root.querySelector('.universal-admin')
   if (!hasLegacyAdmin && !hasUniversalAdmin) return false
 
@@ -122,7 +123,7 @@ function renderUnifiedShell(root) {
       </div>
     </header>
     <nav class="reservations-shell-nav" aria-label="Reservations">
-      ${buildNavigation(rawRoute)}
+      ${buildNavigation(rawRoute, capabilities)}
     </nav>
     <section class="reservations-shell-content" data-reservations-content></section>
   `
@@ -135,14 +136,20 @@ function renderUnifiedShell(root) {
   return true
 }
 
-function installUnifiedManagementShell() {
+async function installUnifiedManagementShell() {
   const root = document.querySelector('#app')
   if (!root) return
+  let capabilities = {}
+  const businessId = Number(runtime.businessId)
+  if (businessId) {
+    const settings = await loadTenantReservationsSettings(supabase, businessId, 'template_key,capabilities,terminology')
+    capabilities = resolveJourneyConfiguration(settings || {}, { business_type: runtime.businessType }).capabilities
+  }
 
-  if (renderUnifiedShell(root)) return
+  if (renderUnifiedShell(root, capabilities)) return
 
   const observer = new MutationObserver(() => {
-    if (renderUnifiedShell(root)) observer.disconnect()
+    if (renderUnifiedShell(root, capabilities)) observer.disconnect()
   })
 
   observer.observe(root, { childList: true, subtree: true })

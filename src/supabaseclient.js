@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
+import { usesUniversalBookingStagingProject } from './supabase-environment.js'
 
-const isUniversalBookingPreview = window.location.hostname.includes('git-feature-univers')
+const isUniversalBookingPreview = usesUniversalBookingStagingProject(window.location.hostname)
 const stagingUrl = 'https://mmnojpzqmihlsoxjecpm.supabase.co'
 const stagingPublishableKey = 'sb_publishable_TMuXrY_Kejd8QsVLlAvSTA_IOxu7hLV'
 

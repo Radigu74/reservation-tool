@@ -1,37 +1,54 @@
 import { supabase } from './supabaseclient.js'
+import { formValues, normalizeCustomerForm, serializeCustomerFormAnswers, validateCustomerForm, renderCustomerFormField } from './customer-form-contract.js'
+import { resolveReservationsConfiguration } from './reservation-configuration.js'
+import { loadPublicReservationsConfiguration } from './reservation-settings-access.js'
 
 const route = window.location.pathname.split('/').filter(Boolean)
 const businessSlug = route[0]?.toLowerCase() === 'book' ? route[1] : null
 
-if (businessSlug) installCustomerForm()
+if (businessSlug) installCustomerForm().catch(showCustomerFormError)
+
+function showCustomerFormError(error) {
+  const app = document.querySelector('#app')
+  if (!app) return
+  const message = document.createElement('p')
+  message.className = 'booking-error'
+  message.setAttribute('role', 'alert')
+  message.textContent = error?.message || 'Customer Form could not be loaded.'
+  app.prepend(message)
+}
 
 async function installCustomerForm() {
-  const [{ data: fields = [], error }, { data: businesses = [] }] = await Promise.all([
+  const [{ data: fields = [], error }, { data: businesses = [], error: businessError }] = await Promise.all([
     supabase.rpc('get_public_booking_custom_fields', { p_business_slug: businessSlug }),
     supabase.rpc('get_public_booking_business', { p_business_slug: businessSlug }),
   ])
-  if (error) return
+  if (error) throw new Error(`Customer Form could not be loaded: ${error.message}`)
+  if (businessError) throw new Error(`Booking business could not be loaded: ${businessError.message}`)
 
   const business = businesses?.[0]
-  const businessType = String(business?.business_type || 'general').toLowerCase()
-  const isRestaurantBusiness = businessType === 'restaurant'
-  const system = Object.fromEntries(fields.filter(f => f.system_key).map(f => [f.system_key, f]))
-  const custom = fields.filter(f => !f.system_key)
+  if (!business?.id) throw new Error('Booking business could not be loaded.')
+  const settings = await loadPublicReservationsConfiguration(supabase, businessSlug)
+  const normalized = normalizeCustomerForm(fields, { activeOnly: true })
+  const configuration = resolveReservationsConfiguration({ templateKey: settings?.template_key, businessType: business?.business_type, terminology: settings?.terminology, capabilities: settings?.capabilities })
+  const isRestaurantBusiness = configuration.templateKey === 'restaurant'
+  const system = Object.fromEntries(normalized.filter(f => f.system_key).flatMap(f => [[f.system_key, f], [f.system_key === 'name' ? 'customer_name' : f.system_key === 'phone' ? 'customer_phone' : f.system_key === 'email' ? 'customer_email' : f.system_key, f]]))
+  const custom = normalized.filter(f => !f.system_key)
 
   const originalRpc = supabase.rpc.bind(supabase)
   supabase.rpc = (fn, args = {}, options) => {
-    if (fn === 'create_public_restaurant_reservation') {
+    if (['create_public_restaurant_reservation', 'create_public_booking', 'create_public_session_booking'].includes(fn)) {
       const form = document.querySelector('#publicBookingForm')
       if (form) {
-        const values = new FormData(form)
-        const customData = { ...(args.p_custom_data || {}) }
-        if (system.customer_email) customData.customer_email = values.get('customer_email') || values.get('email') || null
-        custom.forEach(field => {
-          const key = `custom_${field.id}`
-          if (field.field_type === 'checkbox') customData[String(field.id)] = values.get(key) === 'on'
-          else customData[String(field.id)] = values.get(key) || null
-        })
-        args = { ...args, p_custom_data: customData }
+        const values = formValues(form, normalized)
+        const validation = validateCustomerForm(normalized, values)
+        if (validation) return { data: null, error: new Error(validation) }
+        const customData = serializeCustomerFormAnswers(normalized, values)
+        const raw = new FormData(form)
+        if (system.customer_email) args.p_customer_email = raw.get('email') || raw.get('customer_email') || null
+        if (system.customer_name) args.p_customer_name = raw.get('name') || raw.get('customer_name') || null
+        if (system.customer_phone) args.p_customer_phone = raw.get('phone') || raw.get('customer_phone') || null
+        args = { ...args, p_custom_data: { ...(args.p_custom_data || {}), ...customData } }
       }
     }
     return originalRpc(fn, args, options)
@@ -72,14 +89,14 @@ async function installCustomerForm() {
       email.closest('label').firstChild.textContent = system.customer_email.field_label
     } else if (system.customer_email) {
       const grid = form.querySelector('.form-grid')
-      if (grid) grid.insertAdjacentHTML('beforeend', renderField(system.customer_email, 'customer_email'))
+      if (grid) grid.insertAdjacentHTML('beforeend', renderCustomerFormField(system.customer_email, 'customer_email'))
     }
 
     if (custom.length) {
       const anchor = form.querySelector('button.booking-confirm')
       const wrapper = document.createElement('div')
       wrapper.className = 'customer-form-fields'
-      wrapper.innerHTML = custom.map(field => renderField(field, `custom_${field.id}`)).join('')
+      wrapper.innerHTML = custom.map(field => renderCustomerFormField(field, `custom_${field.id}`)).join('')
       anchor?.insertAdjacentElement('beforebegin', wrapper)
     }
   }
@@ -87,22 +104,4 @@ async function installCustomerForm() {
   apply()
   const observer = new MutationObserver(apply)
   observer.observe(document.querySelector('#app') || document.body, { childList: true, subtree: true })
-}
-
-function renderField(field, name) {
-  const required = field.is_required ? ' required' : ''
-  const mark = field.is_required ? ' *' : ''
-  const label = escapeHtml(field.field_label) + mark
-  if (field.field_type === 'textarea') return `<label>${label}<textarea name="${name}" maxlength="2000"${required}></textarea></label>`
-  if (field.field_type === 'dropdown') {
-    const options = String(field.field_options || '').split(/\r?\n/).map(v => v.trim()).filter(Boolean)
-    return `<label>${label}<select name="${name}"${required}><option value="">Select</option>${options.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('')}</select></label>`
-  }
-  if (field.field_type === 'checkbox') return `<label class="booking-checkbox"><input type="checkbox" name="${name}"${required}> ${label}</label>`
-  const type = field.system_key === 'customer_email' ? 'email' : 'text'
-  return `<label>${label}<input type="${type}" name="${name}" maxlength="320"${required}></label>`
-}
-
-function escapeHtml(value = '') {
-  return String(value).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#039;' }[c]))
 }

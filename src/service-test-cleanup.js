@@ -22,7 +22,7 @@ function testBadge() {
 async function syncPendingTestFlag() {
   if (!pendingTestService) return
   const pending = pendingTestService
-  const { data } = await supabase.from('services').select('id,is_test').eq('business_id', businessId).eq('name', pending.name).eq('is_active', true).maybeSingle()
+  const { data } = await supabase.from('services').select('id,is_test').eq('business_id', businessId).eq('name', pending.name).eq('is_active', true).eq('is_internal', false).maybeSingle()
   if (!data) return
   pendingTestService = null
   if (Boolean(data.is_test) === pending.isTest) return
@@ -48,7 +48,7 @@ async function enhanceCreateForm() {
 }
 
 async function enhanceActiveServices() {
-  const { data: services, error } = await supabase.from('services').select('id,name,is_test').eq('business_id', businessId).eq('is_active', true)
+  const { data: services, error } = await supabase.from('services').select('id,name,is_test').eq('business_id', businessId).eq('is_active', true).eq('is_internal', false)
   if (error) return
   const byName = new Map((services || []).map(service => [service.name, service]))
   document.querySelectorAll('.entity-card').forEach(card => {
@@ -64,7 +64,7 @@ async function enhanceEditForm() {
   if (!form || form.dataset.testCleanupReady) return
   const serviceId = Number(document.querySelector('.edit-service:focus')?.dataset.id || 0)
   const serviceName = form.querySelector('#editServiceName')?.value
-  const { data } = await supabase.from('services').select('id,is_test').eq('business_id', businessId).eq('name', serviceName).maybeSingle()
+  const { data } = await supabase.from('services').select('id,is_test').eq('business_id', businessId).eq('name', serviceName).eq('is_internal', false).maybeSingle()
   if (!data) return
   form.dataset.testCleanupReady = '1'
   const publishLabel = document.getElementById('editServicePublished')?.closest('label')
