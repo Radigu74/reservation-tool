@@ -1,5 +1,6 @@
 import { supabase } from './supabaseclient.js'
 import { resolveReservationsConfiguration } from './reservation-configuration.js'
+import { bookingConfirmationPresentation } from './reservation-journey.js'
 import { loadPublicReservationsConfiguration } from './reservation-settings-access.js'
 
 const route = window.location.pathname.split('/').filter(Boolean)
@@ -33,6 +34,7 @@ async function installBookingFlowWording() {
   const isRestaurantBusiness = configuration.templateKey === 'restaurant'
 
   const requestMode = settings?.booking_behavior === 'request'
+  const confirmationPresentation = bookingConfirmationPresentation(configuration, { requestMode })
 
   function apply() {
     if (!isRestaurantBusiness) {
@@ -57,7 +59,7 @@ async function installBookingFlowWording() {
       if (notesLabel && !notesLabel.hidden) notesLabel.hidden = true
 
       const submit = form.querySelector('button.booking-confirm[type="submit"]')
-      const submitLabel = requestMode ? 'Request appointment' : 'Confirm booking'
+      const submitLabel = confirmationPresentation.confirmLabel
       // Guard text writes: MutationObserver watches characterData, so repeatedly assigning
       // the same text can create a self-sustaining mutation loop and starve async slot loading.
       if (submit && !submit.disabled && submit.textContent !== submitLabel) submit.textContent = submitLabel
@@ -77,7 +79,7 @@ async function installBookingFlowWording() {
 
     if (!isRestaurantBusiness) {
       const successKicker = success.querySelector('.booking-kicker')
-      const successLabel = requestMode ? 'Appointment request received' : 'Booking confirmed'
+      const successLabel = confirmationPresentation.confirmationKicker
       if (successKicker && successKicker.textContent !== successLabel) successKicker.textContent = successLabel
       const restaurantConfirmation = paragraphs.find(p => /your table for .* has been reserved/i.test(p.textContent))
       const confirmation = `Your ${configuration.terminology.bookingSingular.toLowerCase()} has been reserved.`

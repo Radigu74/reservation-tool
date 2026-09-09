@@ -40,14 +40,24 @@ export function filterRestaurantSlotsForPartySize(slots = [], partySize) {
   return slots.filter(slot => Number(slot.remaining_capacity) >= requested)
 }
 
+export function bookingConfirmationPresentation(configuration = {}, { requestMode = false } = {}) {
+  const terminology = configuration.terminology || resolveReservationsConfiguration().terminology
+  const bookingSingular = terminology.bookingSingular || 'Booking'
+  return {
+    confirmLabel: requestMode ? 'Request appointment' : `Confirm ${bookingSingular.toLowerCase()}`,
+    confirmationKicker: requestMode ? 'Appointment request received' : `${bookingSingular} confirmed`,
+  }
+}
+
 export function scheduledRegistrationPresentation(configuration = {}, service = {}) {
   const terminology = configuration.terminology || resolveReservationsConfiguration().terminology
+  const confirmation = bookingConfirmationPresentation(configuration)
   const packageSessions = Math.max(1, Math.floor(Number(service.price_session_count) || 1))
   const packageValidityDays = Math.max(0, Math.floor(Number(service.package_validity_days) || 0))
   return {
     formHeading: `${terminology.customerSingular} details`,
-    confirmationKicker: `${terminology.bookingSingular} confirmed`,
-    confirmLabel: `Confirm ${terminology.bookingSingular.toLowerCase()}`,
+    confirmationKicker: confirmation.confirmationKicker,
+    confirmLabel: confirmation.confirmLabel,
     packageSessions,
     packageValidityDays,
   }
