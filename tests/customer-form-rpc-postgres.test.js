@@ -3,10 +3,8 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { PGlite } from '@electric-sql/pglite';
 
-const migrations = [
-  'supabase/migrations/20260908103000_customer_form_booking_contract.sql',
-  'supabase/migrations/20260909130000_customer_form_booking_rpc_ambiguity_hotfix.sql',
-];
+const contractMigration = 'supabase/migrations/20260908103000_customer_form_booking_contract.sql';
+const hotfixMigration = 'supabase/migrations/20260909130000_customer_form_booking_rpc_ambiguity_hotfix.sql';
 
 async function expectDatabaseError(run, code) {
   await assert.rejects(run, (error) => error.code === code);
@@ -37,6 +35,7 @@ test('Customer Form public RPCs execute atomically against PostgreSQL', async ()
         slug text not null,
         is_active boolean not null default true,
         is_published boolean not null default true,
+        is_internal boolean not null default false,
         enrollment_mode text,
         enrollment_closed boolean not null default false,
         capacity integer not null default 1,
@@ -87,6 +86,7 @@ test('Customer Form public RPCs execute atomically against PostgreSQL', async ()
         consent_to_contact boolean,
         custom_data jsonb
       );
+      create table public.reservations (id bigint generated always as identity primary key);
 
       create function public.create_public_booking(
         p_business_slug text, p_service_slug text, p_staff_slug text,
@@ -148,19 +148,17 @@ test('Customer Form public RPCs execute atomically against PostgreSQL', async ()
       end $$;
     `);
 
-    for (const migration of migrations) {
-      await db.exec(await readFile(migration, 'utf8'));
-    }
+    await db.exec(await readFile(contractMigration, 'utf8'));
 
     await db.exec(`
       insert into public.businesses(id,business_slug) values
         (1,'general'),(2,'restaurant-demo'),(3,'learning'),(4,'other-tenant');
-      insert into public.services(id,business_id,slug,enrollment_mode,capacity,cohort_start_date) values
-        (11,1,'appointment',null,1,null),
-        (12,1,'scheduled-class',null,10,null),
-        (21,2,'restaurant',null,20,null),
-        (31,3,'learning-session',null,10,null),
-        (32,3,'learning-enquiry','cohort',5,date '2030-01-01');
+      insert into public.services(id,business_id,slug,enrollment_mode,capacity,cohort_start_date,is_internal) values
+        (11,1,'appointment',null,1,null,false),
+        (12,1,'scheduled-class',null,10,null,false),
+        (21,2,'restaurant',null,20,null,true),
+        (31,3,'learning-session',null,10,null,false),
+        (32,3,'learning-enquiry','cohort',5,date '2030-01-01',false);
       insert into public.booking_custom_fields
         (id,business_id,field_label,field_type,is_required,display_order,field_options) values
         (101,1,'Reason','text',true,1,null),
@@ -171,13 +169,31 @@ test('Customer Form public RPCs execute atomically against PostgreSQL', async ()
         (401,4,'Private other-tenant field','text',true,1,null);
     `);
 
+    const validGeneralArgs = `'general','appointment','staff-a','2030-01-02 08:00:00+00',
+      'Test Customer','test@example.invalid','0000000000',null,
+      '{"101":"Consultation","102":"First visit"}'`;
+    await expectDatabaseError(
+      () => db.query(`select * from public.create_public_booking(${validGeneralArgs})`),
+      '42702',
+    );
+    await expectDatabaseError(() => db.query(`select * from public.create_public_session_booking(
+      'general','scheduled-class',1,'Test Customer','test@example.invalid','0000000000',null,2,
+      '{"101":"Group booking","102":"Follow-up"}'
+    )`), '42702');
+    assert.equal((await db.query('select count(*)::integer count from public.bookings')).rows[0].count, 0);
+
+    await db.exec(await readFile(hotfixMigration, 'utf8'));
+
     const standard = await db.query(`select * from public.create_public_booking(
       'general','appointment','staff-a','2030-01-02 08:00:00+00',
       'Test Customer','test@example.invalid','0000000000',null,
       '{"101":"Consultation","102":"First visit","401":"leak","999":"unknown","_field_labels":{"101":"Forged"}}'
     )`);
     assert.equal(standard.rows.length, 1);
-    const standardData = await db.query('select custom_data from public.bookings where id=$1', [standard.rows[0].booking_id]);
+    assert.match(standard.rows[0].reference, /^BK-[0-9a-f]{8}$/i);
+    const standardData = await db.query('select business_id,service_id,custom_data from public.bookings where id=$1', [standard.rows[0].booking_id]);
+    assert.equal(standardData.rows[0].business_id, 1);
+    assert.equal(standardData.rows[0].service_id, 11);
     assert.deepEqual(standardData.rows[0].custom_data, {
       101: 'Consultation', 102: 'First visit',
       _field_labels: { 101: 'Reason', 102: 'Visit type' },
@@ -188,7 +204,10 @@ test('Customer Form public RPCs execute atomically against PostgreSQL', async ()
       '{"101":"Group booking","102":"Follow-up"}'
     )`);
     assert.equal(scheduled.rows.length, 1);
-    const scheduledData = await db.query('select custom_data from public.bookings where id=$1', [scheduled.rows[0].booking_id]);
+    const scheduledData = await db.query('select business_id,service_id,scheduled_session_id,custom_data from public.bookings where id=$1', [scheduled.rows[0].booking_id]);
+    assert.equal(scheduledData.rows[0].business_id, 1);
+    assert.equal(scheduledData.rows[0].service_id, 12);
+    assert.equal(scheduledData.rows[0].scheduled_session_id, 1);
     assert.deepEqual(scheduledData.rows[0].custom_data, {
       101: 'Group booking', 102: 'Follow-up',
       _field_labels: { 101: 'Reason', 102: 'Visit type' },
@@ -202,13 +221,21 @@ test('Customer Form public RPCs execute atomically against PostgreSQL', async ()
     const restaurantData = await db.query("select customer_email,custom_data from public.bookings where reference='RS-TEST'");
     assert.equal(restaurantData.rows[0].customer_email, 'diner@example.invalid');
     assert.deepEqual(restaurantData.rows[0].custom_data, { 201: true, _field_labels: { 201: 'Accessibility' } });
+    const restaurantRelationship = await db.query(`select service.is_internal
+      from public.bookings booking join public.services service on service.id=booking.service_id
+      where booking.reference='RS-TEST'`);
+    assert.equal(restaurantRelationship.rows[0].is_internal, true);
+    assert.equal((await db.query('select count(*)::integer count from public.reservations')).rows[0].count, 0);
 
     const learningSession = await db.query(`select * from public.create_public_session_booking(
       'learning','learning-session',2,'Test Student','guardian@example.invalid','0000000000',null,1,
       '{"301":"Test Student","302":"Exam preparation"}'
     )`);
     assert.equal(learningSession.rows.length, 1);
-    const learningSessionData = await db.query('select custom_data from public.bookings where id=$1', [learningSession.rows[0].booking_id]);
+    const learningSessionData = await db.query('select business_id,service_id,scheduled_session_id,custom_data from public.bookings where id=$1', [learningSession.rows[0].booking_id]);
+    assert.equal(learningSessionData.rows[0].business_id, 3);
+    assert.equal(learningSessionData.rows[0].service_id, 31);
+    assert.equal(learningSessionData.rows[0].scheduled_session_id, 2);
     assert.deepEqual(learningSessionData.rows[0].custom_data, {
       301: 'Test Student', 302: 'Exam preparation',
       _field_labels: { 301: 'Student name', 302: 'Learning goal' },
