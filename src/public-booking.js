@@ -1,7 +1,7 @@
 import { supabase } from './supabaseclient.js'
 import { resolveReservationsConfiguration } from './reservation-configuration.js'
 import { formValues, normalizeCustomerForm, serializeCustomerFormAnswers, validateCustomerForm, renderCustomerFormField } from './customer-form-contract.js'
-import { buildCustomerJourney, isCustomerVisibleService, resolveJourneyConfiguration } from './reservation-journey.js'
+import { buildCustomerJourney, filterRestaurantSlotsForPartySize, isCustomerVisibleService, resolveJourneyConfiguration, restaurantPartySizeRange, scheduledRegistrationPresentation } from './reservation-journey.js'
 import { loadPublicReservationsConfiguration } from './reservation-settings-access.js'
 import {
   PUBLIC_ASSIGNMENT_PROJECTION,
@@ -93,24 +93,30 @@ async function servicePage(business,service){
 }
 async function restaurantServicePage(business,service){
   const today=new Date(), max=new Date(); max.setDate(max.getDate()+60)
-  const crumb='<a href="/book/'+esc(business.business_slug)+'">Services</a><span>/</span><span>'+esc(service.name)+'</span>'
-  shell(business,'<section class="booking-hero compact"><p class="booking-kicker">'+esc(business.reservationConfiguration.terminology.bookingSingular)+'</p><h1>Choose a time</h1><p>Choose a date and available time.</p></section><section class="calendar-panel"><div><label for="bookingDate">Choose a date</label><input id="bookingDate" type="date" min="'+dateValue(today)+'" max="'+dateValue(max)+'" value="'+dateValue(today)+'"><p id="restaurantTimezone" class="timezone"></p></div><div><h2>Available times</h2><div id="availableSlots" class="slot-grid"></div></div></section><form id="publicBookingForm" class="booking-form" hidden><h2>Your details</h2><p id="selectedTime"></p><div class="form-grid"><label>Name<input name="name" required maxlength="200"></label><label>Phone<input name="phone" required maxlength="50"></label><label>Number of guests<input name="quantity" type="number" min="1" value="1" required></label></div><label>Special requests<textarea name="notes" maxlength="2000"></textarea></label><button class="booking-confirm" type="submit">Confirm reservation</button><p id="bookingMessage" role="status"></p></form>',crumb)
-  const date=document.querySelector('#bookingDate'),slots=document.querySelector('#availableSlots'),form=document.querySelector('#publicBookingForm'),timezone=document.querySelector('#restaurantTimezone')
+  const settingsResult=await supabase.from('restaurant_settings').select('max_guests_per_slot').eq('business_id',business.id).maybeSingle()
+  if(settingsResult.error||!settingsResult.data){reportPublicQueryError('restaurant settings',settingsResult.error);return fail('Restaurant settings could not be loaded.')}
+  const partyRange=restaurantPartySizeRange(settingsResult.data.max_guests_per_slot)
+  const crumb=business.reservationConfiguration.capabilities.services===false?'':'<a href="/book/'+esc(business.business_slug)+'">Services</a><span>/</span><span>'+esc(service.name)+'</span>'
+  shell(business,'<section class="booking-hero compact"><p class="booking-kicker">'+esc(business.reservationConfiguration.terminology.bookingSingular)+'</p><h1>Choose your party and time</h1><p>Choose your party size, date and available time.</p></section><section class="calendar-panel restaurant-party-size"><div><label for="partySize">Number of guests</label><input id="partySize" type="number" min="'+partyRange.min+'" max="'+partyRange.max+'" value="1" required><p>Up to '+partyRange.max+' guests per table.</p></div></section><section class="calendar-panel"><div><label for="bookingDate">Choose a date</label><input id="bookingDate" type="date" min="'+dateValue(today)+'" max="'+dateValue(max)+'" value="'+dateValue(today)+'"><p id="restaurantTimezone" class="timezone"></p></div><div><h2>Available times</h2><div id="availableSlots" class="slot-grid"></div></div></section><form id="publicBookingForm" class="booking-form" hidden><h2>Guest details</h2><p id="selectedTime"></p><div class="form-grid"><label>Name<input name="name" required maxlength="200"></label><label>Phone<input name="phone" required maxlength="50"></label></div><label>Special requests<textarea name="notes" maxlength="2000"></textarea></label><button class="booking-confirm" type="submit">Confirm reservation</button><p id="bookingMessage" role="status"></p></form>',crumb)
+  const party=document.querySelector('#partySize'),date=document.querySelector('#bookingDate'),slots=document.querySelector('#availableSlots'),form=document.querySelector('#publicBookingForm'),timezone=document.querySelector('#restaurantTimezone')
   let selected=null
   async function load(){
     selected=null;form.hidden=true;slots.innerHTML='<p>Checking availability…</p>'
+    const quantity=Number(party.value)
+    if(!Number.isInteger(quantity)||quantity<partyRange.min||quantity>partyRange.max){slots.innerHTML='<p>Choose a valid number of guests.</p>';return}
     const {data,error}=await supabase.rpc('get_public_restaurant_slots',{p_business_slug:business.business_slug,p_local_date:date.value})
     if(error){reportPublicQueryError('restaurant availability',error);slots.innerHTML='<p>Availability could not be loaded.</p>';return}
-    const rows=publicRows(data)
+    const rows=filterRestaurantSlotsForPartySize(publicRows(data),quantity)
     timezone.textContent=rows[0]?.timezone?'Times shown in '+rows[0].timezone:''
     slots.innerHTML=rows.length?rows.map(row=>'<button type="button" class="slot" data-time="'+esc(String(row.reservation_time).slice(0,8))+'" data-capacity="'+row.remaining_capacity+'">'+esc(String(row.reservation_time).slice(0,5))+'<small>'+row.remaining_capacity+' guest'+(row.remaining_capacity===1?'':'s')+' available</small></button>').join(''):'<p>No times available on this date.</p>'
-    slots.querySelectorAll('.slot').forEach(button=>button.onclick=()=>{slots.querySelectorAll('.slot').forEach(item=>item.classList.remove('selected'));button.classList.add('selected');selected={time:button.dataset.time,capacity:Number(button.dataset.capacity)};form.elements.quantity.max=String(selected.capacity);form.elements.quantity.value='1';form.hidden=false;document.querySelector('#selectedTime').textContent=date.value+' at '+button.dataset.time.slice(0,5)})
+    slots.querySelectorAll('.slot').forEach(button=>button.onclick=()=>{slots.querySelectorAll('.slot').forEach(item=>item.classList.remove('selected'));button.classList.add('selected');selected={time:button.dataset.time,capacity:Number(button.dataset.capacity)};form.hidden=false;document.querySelector('#selectedTime').textContent=quantity+' guest'+(quantity===1?'':'s')+' · '+date.value+' at '+button.dataset.time.slice(0,5)})
   }
   date.onchange=load
+  party.onchange=load
   form.onsubmit=async event=>{
     event.preventDefault();if(!selected)return
-    const values=new FormData(form),button=form.querySelector('[type="submit"]'),message=document.querySelector('#bookingMessage'),quantity=Number(values.get('quantity'))
-    if(quantity<1||quantity>selected.capacity){message.textContent='Choose a guest count within the available capacity.';return}
+    const values=new FormData(form),button=form.querySelector('[type="submit"]'),message=document.querySelector('#bookingMessage'),quantity=Number(party.value)
+    if(!Number.isInteger(quantity)||quantity<partyRange.min||quantity>partyRange.max||quantity>selected.capacity){message.textContent='Choose a guest count within the available capacity.';return}
     button.disabled=true;message.textContent='Confirming…'
     const {data,error}=await supabase.rpc('create_public_restaurant_reservation',{p_business_slug:business.business_slug,p_customer_name:values.get('name'),p_phone:values.get('phone'),p_reservation_date:date.value,p_reservation_time:selected.time,p_party_size:quantity,p_special_request:values.get('notes')||null,p_custom_data:{}})
     button.disabled=false
@@ -123,7 +129,9 @@ async function scheduledServicePage(business,service){
   if(service.enrollment_mode==='cohort') return cohortServicePage(business,service)
   const today=new Date(), max=new Date(); max.setDate(max.getDate()+60)
   const crumb='<a href="/book/'+esc(business.business_slug)+'">Services</a><span>/</span><span>'+esc(service.name)+'</span>'
-  shell(business,'<section class="booking-hero compact"><p class="booking-kicker">Scheduled '+esc(businessTypeLabel(business))+'</p><h1>'+esc(service.name)+'</h1><p>'+esc(service.description||'Choose a published session.')+'</p></section><section class="calendar-panel scheduled-calendar"><div><label for="bookingDate">Choose a date</label><input id="bookingDate" type="date" min="'+dateValue(today)+'" max="'+dateValue(max)+'" value="'+dateValue(today)+'"><p class="timezone">Times are shown in each teacher’s timezone.</p></div><div><h2>Available sessions</h2><div id="availableSessions" class="session-grid"></div></div></section><form id="publicBookingForm" class="booking-form" hidden><h2>Your details</h2><p id="selectedTime"></p><div class="form-grid"><label>Name<input name="name" required maxlength="200"></label><label>Email<input name="email" type="email" maxlength="320"></label><label>Phone<input name="phone" required maxlength="50"></label></div><label>Number of places<input name="quantity" type="number" min="1" value="1" required></label><label>Notes<textarea name="notes" maxlength="2000"></textarea></label><button class="booking-confirm" type="submit">Confirm booking</button><p id="bookingMessage" role="status"></p></form>',crumb)
+  const presentation=scheduledRegistrationPresentation(business.reservationConfiguration,service)
+  const packageInfo=presentation.packageSessions>1?'<p><strong>Package:</strong> '+esc(priceLabel(service))+' · '+presentation.packageSessions+' sessions'+(presentation.packageValidityDays?' · valid for '+presentation.packageValidityDays+' days':'')+'.</p>':''
+  shell(business,'<section class="booking-hero compact"><p class="booking-kicker">Scheduled '+esc(businessTypeLabel(business))+'</p><h1>'+esc(service.name)+'</h1><p>'+esc(service.description||'Choose a published session.')+'</p>'+packageInfo+'</section><section class="calendar-panel scheduled-calendar"><div><label for="bookingDate">Choose a date</label><input id="bookingDate" type="date" min="'+dateValue(today)+'" max="'+dateValue(max)+'" value="'+dateValue(today)+'"><p class="timezone">Times are shown in each '+esc(business.reservationConfiguration.terminology.teamMemberSingular.toLowerCase())+'’s timezone.</p></div><div><h2>Available sessions</h2><div id="availableSessions" class="session-grid"></div></div></section><form id="publicBookingForm" class="booking-form" hidden><h2>'+esc(presentation.formHeading)+'</h2><p id="selectedTime"></p><div class="form-grid"><label>'+esc(business.reservationConfiguration.terminology.customerSingular)+' name<input name="name" required maxlength="200"></label><label>Email<input name="email" type="email" maxlength="320"></label><label>Phone<input name="phone" required maxlength="50"></label></div><label>Number of places<input name="quantity" type="number" min="1" value="1" required></label><label>Notes<textarea name="notes" maxlength="2000"></textarea></label><button class="booking-confirm" type="submit">'+esc(presentation.confirmLabel)+'</button><p id="bookingMessage" role="status"></p></form>',crumb)
   const date=document.querySelector('#bookingDate'), target=document.querySelector('#availableSessions'), form=document.querySelector('#publicBookingForm')
   let selected=null
   async function load(){
@@ -147,7 +155,7 @@ async function scheduledServicePage(business,service){
     const {data,error}=await supabase.rpc('create_public_session_booking',{p_business_slug:business.business_slug,p_service_slug:service.slug,p_session_id:selected.id,p_customer_name:values.get('name'),p_customer_email:values.get('email')||null,p_customer_phone:values.get('phone')||null,p_notes:values.get('notes')||null,p_quantity:Number(values.get('quantity'))})
     button.disabled=false
     if(error){message.textContent=error.message.includes('place')||error.message.includes('available')?'That session no longer has enough places. Please choose again.':'Booking could not be completed.';return}
-    form.innerHTML='<div class="booking-success"><p class="booking-kicker">Booking confirmed</p><h2>Thank you, '+esc(values.get('name'))+'.</h2><p>'+esc(selected.label)+' has been reserved.</p><p>Your reference is <strong>'+esc(data[0].reference)+'</strong>.</p></div>'
+    form.innerHTML='<div class="booking-success"><p class="booking-kicker">'+esc(presentation.confirmationKicker)+'</p><h2>Thank you, '+esc(values.get('name'))+'.</h2><p>Your '+esc(business.reservationConfiguration.terminology.bookingSingular.toLowerCase())+' for '+esc(selected.label)+' is confirmed.</p><p>Your reference is <strong>'+esc(data[0].reference)+'</strong>.</p></div>'
   }
   load()
 }

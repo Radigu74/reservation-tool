@@ -19,6 +19,7 @@ export function isCustomerVisibleService(service = {}) {
 }
 
 export function buildCustomerJourney({ capabilities = {}, service = null } = {}) {
+  if (capabilities.guestCount) return ['party-size', 'date-time', 'customer-form', 'confirmation']
   const steps = []
   if (capabilities.services) steps.push('service')
   if (capabilities.teamResources && service?.supportsTeam !== false) steps.push('team')
@@ -26,6 +27,30 @@ export function buildCustomerJourney({ capabilities = {}, service = null } = {})
   else steps.push('date-time')
   steps.push('customer-form', 'confirmation')
   return steps
+}
+
+export function restaurantPartySizeRange(maxGuests) {
+  const max = Math.floor(Number(maxGuests))
+  return { min: 1, max: Number.isFinite(max) && max > 0 ? max : 1 }
+}
+
+export function filterRestaurantSlotsForPartySize(slots = [], partySize) {
+  const requested = Number(partySize)
+  if (!Number.isInteger(requested) || requested < 1) return []
+  return slots.filter(slot => Number(slot.remaining_capacity) >= requested)
+}
+
+export function scheduledRegistrationPresentation(configuration = {}, service = {}) {
+  const terminology = configuration.terminology || resolveReservationsConfiguration().terminology
+  const packageSessions = Math.max(1, Math.floor(Number(service.price_session_count) || 1))
+  const packageValidityDays = Math.max(0, Math.floor(Number(service.package_validity_days) || 0))
+  return {
+    formHeading: `${terminology.customerSingular} details`,
+    confirmationKicker: `${terminology.bookingSingular} confirmed`,
+    confirmLabel: `Confirm ${terminology.bookingSingular.toLowerCase()}`,
+    packageSessions,
+    packageValidityDays,
+  }
 }
 
 export function getVisibleNavigation(navigation, capabilities = {}) {
