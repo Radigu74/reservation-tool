@@ -15,7 +15,7 @@ function createRoot() {
 }
 
 function withoutImports(source) {
-  return source
+  return source.replace(/\r\n?/g, '\n')
     .replace(/import \{\n  RESERVATIONS_MANAGEMENT_ROUTE_SET,\n  RESERVATIONS_NAVIGATION,\n\} from '\.\/reservations-routes\.js'\n/, '')
     .replace(/import \{ supabase \} from '\.\/supabaseclient\.js'\n/, '')
     .replace(/import \{ getVisibleNavigation, resolveJourneyConfiguration \} from '\.\/reservation-journey\.js'\n/, '')
