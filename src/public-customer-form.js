@@ -2,6 +2,7 @@ import { supabase } from './supabaseclient.js'
 import { formValues, normalizeCustomerForm, serializeCustomerFormAnswers, validateCustomerForm, renderCustomerFormField } from './customer-form-contract.js'
 import { resolveReservationsConfiguration } from './reservation-configuration.js'
 import { loadPublicReservationsConfiguration } from './reservation-settings-access.js'
+import { augmentCustomerFormRpcArgs } from './customer-form-rpc-contract.js'
 
 const route = window.location.pathname.split('/').filter(Boolean)
 const businessSlug = route[0]?.toLowerCase() === 'book' ? route[1] : null
@@ -45,10 +46,11 @@ async function installCustomerForm() {
         if (validation) return { data: null, error: new Error(validation) }
         const customData = serializeCustomerFormAnswers(normalized, values)
         const raw = new FormData(form)
-        if (system.customer_email) args.p_customer_email = raw.get('email') || raw.get('customer_email') || null
-        if (system.customer_name) args.p_customer_name = raw.get('name') || raw.get('customer_name') || null
-        if (system.customer_phone) args.p_customer_phone = raw.get('phone') || raw.get('customer_phone') || null
-        args = { ...args, p_custom_data: { ...(args.p_custom_data || {}), ...customData } }
+        args = augmentCustomerFormRpcArgs(fn, args, {
+          name: system.customer_name ? raw.get('name') || raw.get('customer_name') || null : undefined,
+          email: system.customer_email ? raw.get('email') || raw.get('customer_email') || null : undefined,
+          phone: system.customer_phone ? raw.get('phone') || raw.get('customer_phone') || null : undefined,
+        }, customData)
       }
     }
     return originalRpc(fn, args, options)
