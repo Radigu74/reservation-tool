@@ -199,54 +199,6 @@ function setSettingsTabColors() {
   })
 }
 
-function getManagementRoute() {
-  const parts = window.location.pathname.split('/').filter(Boolean)
-  return String(parts.slice(1).join('/') || 'dashboard')
-    .replace(/^admin\/?/, 'dashboard/')
-    .replace(/^dashboard\/$/, 'dashboard')
-}
-
-async function installUnifiedReservationsNavigation() {
-  const nav = await waitForElement('.admin-nav')
-  if (!nav) return
-
-  const businessSlug = window.location.pathname.split('/').filter(Boolean)[0]
-  if (!businessSlug) return
-
-  const links = [
-    ['Overview', 'dashboard'],
-    ['Bookings', 'dashboard'],
-    ['Services', 'dashboard/services'],
-    ['Team & Resources', 'dashboard/staff'],
-    ['Availability', 'dashboard/availability'],
-    ['Analytics', 'dashboard/analytics'],
-    ['Settings', 'dashboard/settings'],
-    ['Customer Form', 'dashboard/customer-form']
-  ]
-
-  const activeRoute = getManagementRoute()
-  nav.replaceChildren()
-  nav.dataset.reservationsNavigation = 'unified'
-
-  links.forEach(([label, route]) => {
-    const link = document.createElement('a')
-    link.href = `/${businessSlug}/${route}`
-    link.textContent = label
-    link.dataset.reservationsNavLink = route
-
-    const isActive =
-      activeRoute === route ||
-      (route === 'dashboard' && activeRoute === 'dashboard')
-
-    if (isActive) {
-      link.classList.add('active')
-      link.setAttribute('aria-current', 'page')
-    }
-
-    nav.appendChild(link)
-  })
-}
-
 function removeLegacyTenantSwitcher() {
   const switcher = document.getElementById('businessSwitcher')
   if (!switcher) return
@@ -262,7 +214,6 @@ function startEnhancements() {
   updateDashboardHeading()
   enhanceDashboardPage()
   enhanceAnalyticsPage()
-  installUnifiedReservationsNavigation()
   waitForElement('#businessSwitcher').then(removeLegacyTenantSwitcher)
   waitForElement('#businessSettingsSection').then(setSettingsTabColors)
 }

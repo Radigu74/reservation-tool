@@ -141,8 +141,8 @@ async function startUniversalBookingAdmin() {
 
 async function renderServices(business, access) {
   const [{ data: services, error }, { data: archivedServices, error: archivedError }, { data: staff, error: staffError }, { data: enrollments, error: enrollmentError }, { data: customerFields, error: customerFieldsError }, { data: staffSubjects, error: subjectError }, { data: schedulePatterns, error: patternsError }, { data: weeklyRules, error: rulesError }] = await Promise.all([
-    supabase.from('services').select('*').eq('business_id', business.id).eq('is_active', true).order('name'),
-    supabase.from('services').select('id, name, slug, booking_type, updated_at').eq('business_id', business.id).eq('is_active', false).order('name'),
+    supabase.from('services').select('*').eq('business_id', business.id).eq('is_active', true).eq('is_internal', false).order('name'),
+    supabase.from('services').select('id, name, slug, booking_type, updated_at').eq('business_id', business.id).eq('is_active', false).eq('is_internal', false).order('name'),
     supabase.from('staff_members').select('id, display_name, timezone, is_published').eq('business_id', business.id).eq('is_active', true).order('display_name'),
     supabase.from('class_enrollments').select('id, service_id, reference, customer_name, guardian_name, customer_email, customer_phone, quantity, joins_on, status, enquiry_status, contact_requested, school_grade, notes, custom_data, created_at').eq('business_id', business.id).order('created_at', { ascending: false }),
     supabase.from('booking_custom_fields').select('id, field_label').eq('business_id', business.id),
@@ -160,7 +160,7 @@ async function renderServices(business, access) {
   if (rulesError) throw rulesError
   const enrolledByService = enrollments.filter(item => ['pending', 'confirmed'].includes(item.status)).reduce((totals, item) => ({ ...totals, [item.service_id]: (totals[item.service_id] || 0) + item.quantity }), {})
   const customerFieldLabels = Object.fromEntries(customerFields.map(field => [String(field.id), field.field_label]))
-  const customAnswersMarkup = item => Object.entries(item.custom_data || {}).map(([fieldId, value]) => `<small><strong>${escapeHtml(customerFieldLabels[fieldId] || 'Custom field')}:</strong> ${escapeHtml(typeof value === 'boolean' ? (value ? 'Yes' : 'No') : value)}</small>`).join('')
+  const customAnswersMarkup = item => { const snapshots = item.custom_data?._field_labels || {}; return Object.entries(item.custom_data || {}).filter(([fieldId]) => fieldId !== '_field_labels').map(([fieldId, value]) => `<small><strong>${escapeHtml(snapshots[fieldId] || customerFieldLabels[fieldId] || 'Custom field')}:</strong> ${escapeHtml(typeof value === 'boolean' ? (value ? 'Yes' : 'No') : value)}</small>`).join('') }
   const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
   const subjects = [...new Set([...staffSubjects.map(item => item.subject), ...services.map(item => item.subject).filter(Boolean)])].sort()
   const staffMap = Object.fromEntries(staff.map(person => [person.id, person]))
@@ -413,7 +413,7 @@ async function renderServices(business, access) {
 async function renderStaff(business, access) {
   const [{ data: staff, error: staffError }, { data: services, error: servicesError }, { data: assignments, error: assignmentsError }, { data: staffSubjects, error: subjectError }] = await Promise.all([
     supabase.from('staff_members').select('*').eq('business_id', business.id).order('display_name'),
-    supabase.from('services').select('id, name').eq('business_id', business.id).eq('is_active', true).order('name'),
+    supabase.from('services').select('id, name').eq('business_id', business.id).eq('is_active', true).eq('is_internal', false).order('name'),
     supabase.from('staff_services').select('staff_id, service_id, custom_duration_minutes, custom_price, services(name)').eq('is_active', true),
     supabase.from('staff_subjects').select('staff_id, subject').eq('business_id', business.id).order('subject')
   ])
@@ -537,7 +537,7 @@ async function renderStaff(business, access) {
 async function renderSchedule(business, access) {
   const canManage = access.canManageAvailability
   const [{ data: services, error: servicesError }, { data: staff, error: staffError }, { data: assignments, error: assignmentsError }, { data: patterns, error: patternError }, { data: staffSubjects, error: subjectError }] = await Promise.all([
-    supabase.from('services').select('id, name, subject, duration_minutes, capacity, scheduling_mode').eq('business_id', business.id).eq('is_active', true).eq('scheduling_mode', 'scheduled').order('name'),
+    supabase.from('services').select('id, name, subject, duration_minutes, capacity, scheduling_mode').eq('business_id', business.id).eq('is_active', true).eq('is_internal', false).eq('scheduling_mode', 'scheduled').order('name'),
     supabase.from('staff_members').select('id, display_name, user_id, timezone').eq('business_id', business.id).eq('is_active', true).order('display_name'),
     supabase.from('staff_services').select('staff_id, service_id').eq('is_active', true),
     supabase.from('service_schedule_patterns').select('id, service_id, staff_id, day_of_week, starts_at, ends_at').eq('business_id', business.id).eq('is_active', true),
@@ -748,7 +748,7 @@ async function renderSchedule(business, access) {
 async function renderAvailability(business, access) {
   const [{ data: staff, error: staffError }, { data: services, error: servicesError }, { data: assignments, error: assignmentsError }, { data: holidays, error: holidaysError }] = await Promise.all([
     supabase.from('staff_members').select('id, display_name, user_id, timezone').eq('business_id', business.id).eq('is_active', true).order('display_name'),
-    supabase.from('services').select('id, name').eq('business_id', business.id).eq('is_active', true).order('name'),
+    supabase.from('services').select('id, name').eq('business_id', business.id).eq('is_active', true).eq('is_internal', false).order('name'),
     supabase.from('staff_services').select('staff_id, service_id').eq('is_active', true),
     supabase.from('centre_holidays').select('id, starts_on, ends_on, reason').eq('business_id', business.id).gte('ends_on', new Date().toISOString().slice(0, 10)).order('starts_on')
   ])
