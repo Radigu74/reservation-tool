@@ -3,6 +3,12 @@ import { resolveReservationsConfiguration } from './reservation-configuration.js
 import { formValues, normalizeCustomerForm, serializeCustomerFormAnswers, validateCustomerForm, renderCustomerFormField } from './customer-form-contract.js'
 import { buildCustomerJourney, isCustomerVisibleService, resolveJourneyConfiguration } from './reservation-journey.js'
 import { loadPublicReservationsConfiguration } from './reservation-settings-access.js'
+import {
+  PUBLIC_ASSIGNMENT_PROJECTION,
+  PUBLIC_SERVICE_PROJECTION,
+  PUBLIC_STAFF_PROJECTION,
+  publicRows,
+} from './public-booking-data.js'
 
 const route = location.pathname.split('/').filter(Boolean)
 
@@ -21,13 +27,15 @@ const customFieldName = field => `custom_${field.id}`
 const customFieldOptions = field => String(field.field_options || '').split(/\r?\n/).map(value => value.trim()).filter(Boolean)
 const customFieldMarkup = field => renderCustomerFormField(field, customFieldName(field))
 const customFieldAnswers = (form, fields) => serializeCustomerFormAnswers(fields, formValues(form, normalizeCustomerForm(fields)))
+const reportPublicQueryError = (area, error) => console.error(`Public booking ${area} query failed.`, { code: error?.code || 'unknown' })
 
 async function start() {
   document.body.classList.add('public-booking-page')
   app().innerHTML = '<main class="booking-shell">Loading booking page…</main>'
   const businessSlug=route[1], si=route.findIndex(x=>x.toLowerCase()==='services'), ti=route.findIndex(x=>x.toLowerCase()==='team')
   const serviceSlug=si<0?null:route[si+1], staffSlug=ti<0?null:route[ti+1]
-  const {data:businessRows}=await supabase.rpc('get_public_booking_business',{p_business_slug:businessSlug})
+  const {data:businessRows,error:businessError}=await supabase.rpc('get_public_booking_business',{p_business_slug:businessSlug})
+  if(businessError){reportPublicQueryError('business',businessError);return fail('Booking page could not be loaded.')}
   const business=businessRows?.[0]
   if(!business) return fail('Booking page not found.')
   let settings
@@ -42,14 +50,17 @@ async function start() {
   if (!serviceSlug && business.reservationConfiguration.capabilities.services === false) return capabilityDrivenEntry(business)
   document.title='Book with '+business.business_name
   if(!serviceSlug) return businessPage(business)
-  const {data:service}=await supabase.from('services').select('*').eq('business_id',business.id).ilike('slug',serviceSlug).eq('is_active',true).eq('is_published',true).eq('is_internal',false).maybeSingle()
+  const {data:service,error:serviceError}=await supabase.from('services').select(PUBLIC_SERVICE_PROJECTION).eq('business_id',business.id).ilike('slug',serviceSlug).eq('is_active',true).eq('is_published',true).eq('is_internal',false).maybeSingle()
+  if(serviceError){reportPublicQueryError('service',serviceError);return fail('This service could not be loaded.')}
   if(!service) return fail('This service is not available.')
   if(service.booking_type==='restaurant') return restaurantServicePage(business,service)
   if(service.scheduling_mode==='scheduled') return scheduledServicePage(business,service)
   if(!staffSlug) return servicePage(business,service)
-  const {data:staff}=await supabase.from('staff_members').select('*').eq('business_id',business.id).ilike('slug',staffSlug).eq('is_active',true).eq('is_published',true).maybeSingle()
+  const {data:staff,error:staffError}=await supabase.from('staff_members').select(PUBLIC_STAFF_PROJECTION).eq('business_id',business.id).ilike('slug',staffSlug).eq('is_active',true).eq('is_published',true).maybeSingle()
+  if(staffError){reportPublicQueryError('team member',staffError);return fail('This team member could not be loaded.')}
   if(!staff) return fail('This team member is not available.')
-  const {data:assignment}=await supabase.from('staff_services').select('*').eq('staff_id',staff.id).eq('service_id',service.id).eq('is_active',true).maybeSingle()
+  const {data:assignment,error:assignmentError}=await supabase.from('staff_services').select(PUBLIC_ASSIGNMENT_PROJECTION).eq('staff_id',staff.id).eq('service_id',service.id).eq('is_active',true).maybeSingle()
+  if(assignmentError){reportPublicQueryError('team assignment',assignmentError);return fail('This team member could not be loaded.')}
   if(!assignment) return fail('This team member does not provide that service.')
   calendarPage(business,service,staff,assignment)
 }
@@ -59,7 +70,10 @@ function shell(business,content,crumb=''){
   setupBookingManager(business)
 }
 async function businessPage(business){
-  const [{data:services=[]},{data:cohorts=[]}]=await Promise.all([supabase.from('services').select('*').eq('business_id',business.id).eq('is_active',true).eq('is_published',true).eq('is_internal',false).order('name'),supabase.rpc('get_public_cohort_availability',{p_business_slug:business.business_slug})])
+  const [servicesResult,cohortsResult]=await Promise.all([supabase.from('services').select(PUBLIC_SERVICE_PROJECTION).eq('business_id',business.id).eq('is_active',true).eq('is_published',true).eq('is_internal',false).order('name'),supabase.rpc('get_public_cohort_availability',{p_business_slug:business.business_slug})])
+  if(servicesResult.error){reportPublicQueryError('services',servicesResult.error);return fail('Services could not be loaded.')}
+  if(cohortsResult.error){reportPublicQueryError('class availability',cohortsResult.error);return fail('Class availability could not be loaded.')}
+  const services=publicRows(servicesResult.data),cohorts=publicRows(cohortsResult.data)
   const visibleServices=services.filter(isCustomerVisibleService)
   const cohortMap=Object.fromEntries(cohorts.map(item=>[item.service_id,item]))
   shell(business,'<section class="booking-hero"><p class="booking-kicker">Choose a service</p><h1>How can we help?</h1><p>Select a service to see the team and available times.</p></section><section class="booking-grid">'+(visibleServices.map(s=>{const cohort=cohortMap[s.id];return '<a class="booking-card" href="/book/'+esc(business.business_slug)+'/services/'+esc(s.slug)+'"><span class="booking-type">'+esc(businessTypeLabel(business))+'</span><h2>'+esc(s.name)+'</h2><p>'+esc(s.description||'')+'</p><div><span>'+(cohort?(cohort.is_full?'Class full':cohort.remaining+' place'+(cohort.remaining===1?'':'s')+' left'):s.duration_minutes+' min')+'</span><strong>'+priceLabel(s)+'</strong></div></a>'}).join('')||'<p>No services are published yet.</p>')+'</section>')
@@ -71,7 +85,9 @@ async function capabilityDrivenEntry(business) {
   return fail('Reservations are not configured for this business.')
 }
 async function servicePage(business,service){
-  const {data:items=[]}=await supabase.from('staff_services').select('custom_duration_minutes,custom_price,staff_members!inner(*)').eq('service_id',service.id).eq('is_active',true)
+  const {data,error}=await supabase.from('staff_services').select(`custom_duration_minutes,custom_price,staff_members!inner(${PUBLIC_STAFF_PROJECTION})`).eq('service_id',service.id).eq('is_active',true)
+  if(error){reportPublicQueryError('team',error);return fail('Team members could not be loaded.')}
+  const items=publicRows(data)
   const cards=items.map(item=>{const s=item.staff_members;return '<a class="booking-card staff-card" href="/book/'+esc(business.business_slug)+'/services/'+esc(service.slug)+'/team/'+esc(s.slug)+'"><div class="staff-avatar">'+(s.photo_url?'<img src="'+esc(s.photo_url)+'" alt="">':esc(s.display_name[0]))+'</div><div><h2>'+esc(s.display_name)+'</h2><p>'+esc(s.bio||'')+'</p><span>'+(item.custom_duration_minutes||service.duration_minutes)+' min · '+priceLabel(service,item.custom_price??service.price)+'</span></div></a>'}).join('')
   shell(business,'<section class="booking-hero compact"><p class="booking-kicker">'+esc(businessTypeLabel(business))+'</p><h1>'+esc(service.name)+'</h1><p>'+esc(service.description||'Choose a team member.')+'</p></section><h2>Choose your team member</h2><section class="booking-grid">'+(cards||'<p>No team members are available.</p>')+'</section>','<a href="/book/'+esc(business.business_slug)+'">Services</a><span>/</span><span>'+esc(service.name)+'</span>')
 }
@@ -84,8 +100,8 @@ async function restaurantServicePage(business,service){
   async function load(){
     selected=null;form.hidden=true;slots.innerHTML='<p>Checking availability…</p>'
     const {data,error}=await supabase.rpc('get_public_restaurant_slots',{p_business_slug:business.business_slug,p_local_date:date.value})
-    if(error){slots.innerHTML='<p>Availability could not be loaded.</p>';return}
-    const rows=data||[]
+    if(error){reportPublicQueryError('restaurant availability',error);slots.innerHTML='<p>Availability could not be loaded.</p>';return}
+    const rows=publicRows(data)
     timezone.textContent=rows[0]?.timezone?'Times shown in '+rows[0].timezone:''
     slots.innerHTML=rows.length?rows.map(row=>'<button type="button" class="slot" data-time="'+esc(String(row.reservation_time).slice(0,8))+'" data-capacity="'+row.remaining_capacity+'">'+esc(String(row.reservation_time).slice(0,5))+'<small>'+row.remaining_capacity+' guest'+(row.remaining_capacity===1?'':'s')+' available</small></button>').join(''):'<p>No times available on this date.</p>'
     slots.querySelectorAll('.slot').forEach(button=>button.onclick=()=>{slots.querySelectorAll('.slot').forEach(item=>item.classList.remove('selected'));button.classList.add('selected');selected={time:button.dataset.time,capacity:Number(button.dataset.capacity)};form.elements.quantity.max=String(selected.capacity);form.elements.quantity.value='1';form.hidden=false;document.querySelector('#selectedTime').textContent=date.value+' at '+button.dataset.time.slice(0,5)})
@@ -113,8 +129,9 @@ async function scheduledServicePage(business,service){
   async function load(){
     selected=null;form.hidden=true;target.innerHTML='<p>Checking sessions…</p>'
     const {data,error}=await supabase.rpc('get_public_scheduled_sessions',{p_business_slug:business.business_slug,p_service_slug:service.slug,p_from_date:date.value,p_to_date:date.value})
-    if(error){target.innerHTML='<p>Sessions could not be loaded.</p>';return}
-    target.innerHTML=data.length?data.map(session=>'<button type="button" class="session-choice" data-id="'+session.session_id+'" data-start="'+session.starts_at+'" data-end="'+session.ends_at+'" data-timezone="'+esc(session.staff_timezone)+'" data-capacity="'+session.remaining_capacity+'"><strong>'+new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit',timeZone:session.staff_timezone}).format(new Date(session.starts_at))+'–'+new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit',timeZone:session.staff_timezone}).format(new Date(session.ends_at))+'</strong><span>'+esc(session.staff_name)+'</span><small>'+session.remaining_capacity+' place'+(session.remaining_capacity===1?'':'s')+' remaining</small></button>').join(''):'<p>No sessions are available on this date.</p>'
+    if(error){reportPublicQueryError('scheduled sessions',error);target.innerHTML='<p>Sessions could not be loaded.</p>';return}
+    const rows=publicRows(data)
+    target.innerHTML=rows.length?rows.map(session=>'<button type="button" class="session-choice" data-id="'+session.session_id+'" data-start="'+session.starts_at+'" data-end="'+session.ends_at+'" data-timezone="'+esc(session.staff_timezone)+'" data-capacity="'+session.remaining_capacity+'"><strong>'+new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit',timeZone:session.staff_timezone}).format(new Date(session.starts_at))+'–'+new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit',timeZone:session.staff_timezone}).format(new Date(session.ends_at))+'</strong><span>'+esc(session.staff_name)+'</span><small>'+session.remaining_capacity+' place'+(session.remaining_capacity===1?'':'s')+' remaining</small></button>').join(''):'<p>No sessions are available on this date.</p>'
     target.querySelectorAll('.session-choice').forEach(button=>button.onclick=()=>{
       target.querySelectorAll('.session-choice').forEach(item=>item.classList.remove('selected'));button.classList.add('selected')
       selected={id:Number(button.dataset.id),capacity:Number(button.dataset.capacity),label:button.querySelector('strong').textContent+' with '+button.querySelector('span').textContent,timezone:button.dataset.timezone}
@@ -138,11 +155,15 @@ async function scheduledServicePage(business,service){
 async function cohortServicePage(business,service){
   const today=new Date(), max=new Date();max.setDate(max.getDate()+60)
   const crumb='<a href="/book/'+esc(business.business_slug)+'">Services</a><span>/</span><span>'+esc(service.name)+'</span>'
-  const [{data:availability=[]},{data:sessions=[]},{data:customerFields=[]}]=await Promise.all([
+  const [availabilityResult,sessionsResult,customerFieldsResult]=await Promise.all([
     supabase.rpc('get_public_cohort_availability',{p_business_slug:business.business_slug}),
     supabase.rpc('get_public_scheduled_sessions',{p_business_slug:business.business_slug,p_service_slug:service.slug,p_from_date:dateValue(today),p_to_date:dateValue(max)}),
     supabase.rpc('get_public_booking_custom_fields',{p_business_slug:business.business_slug})
   ])
+  if(availabilityResult.error){reportPublicQueryError('cohort availability',availabilityResult.error);return fail('Class availability could not be loaded.')}
+  if(sessionsResult.error){reportPublicQueryError('class sessions',sessionsResult.error);return fail('Class sessions could not be loaded.')}
+  if(customerFieldsResult.error){reportPublicQueryError('customer form',customerFieldsResult.error);return fail('Customer Form could not be loaded.')}
+  const availability=publicRows(availabilityResult.data),sessions=publicRows(sessionsResult.data),customerFields=publicRows(customerFieldsResult.data)
   const customFields=normalizeCustomerForm(customerFields,{activeOnly:true}).filter(field=>!field.system_key&&String(field.field_label).trim().toLowerCase()!=='student name')
   const cohort=availability.find(item=>item.service_id===service.id), remaining=cohort?.remaining??0
   const sessionList=sessions.length?sessions.map(item=>'<article class="session-choice static"><strong>'+new Intl.DateTimeFormat(undefined,{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit',timeZone:item.staff_timezone}).format(new Date(item.starts_at))+'</strong><span>'+esc(item.staff_name)+'</span></article>').join(''):'<p>No upcoming classes are published yet.</p>'
@@ -174,8 +195,9 @@ function calendarPage(business,service,staff,assignment){
   async function load(){
     selected=null;form.hidden=true;slots.innerHTML='<p>Checking availability…</p>'
     const {data,error}=await supabase.rpc('get_available_slots',{p_business_slug:business.business_slug,p_service_slug:service.slug,p_staff_slug:staff.slug,p_local_date:date.value})
-    if(error){slots.innerHTML='<p>Availability could not be loaded.</p>';return}
-    slots.innerHTML=data.length?data.map(x=>'<button type="button" class="slot" data-start="'+x.starts_at+'">'+new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit',timeZone:staff.timezone}).format(new Date(x.starts_at))+'</button>').join(''):'<p>No times available on this date.</p>'
+    if(error){reportPublicQueryError('availability',error);slots.innerHTML='<p>Availability could not be loaded.</p>';return}
+    const rows=publicRows(data)
+    slots.innerHTML=rows.length?rows.map(x=>'<button type="button" class="slot" data-start="'+x.starts_at+'">'+new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit',timeZone:staff.timezone}).format(new Date(x.starts_at))+'</button>').join(''):'<p>No times available on this date.</p>'
     slots.querySelectorAll('.slot').forEach(button=>button.onclick=()=>{slots.querySelectorAll('.slot').forEach(x=>x.classList.remove('selected'));button.classList.add('selected');selected=button.dataset.start;form.hidden=false;document.querySelector('#selectedTime').textContent=date.value+' at '+button.textContent+' ('+staff.timezone+')'})
   }
   date.onchange=load
