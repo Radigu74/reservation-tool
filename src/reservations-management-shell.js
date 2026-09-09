@@ -6,6 +6,8 @@ import { supabase } from './supabaseclient.js'
 import { getVisibleNavigation, resolveJourneyConfiguration } from './reservation-journey.js'
 import { loadTenantReservationsSettings } from './reservation-settings-access.js'
 
+const runtime = window.__TERRAPEAK_RESERVATIONS_RUNTIME__
+
 const managementRoutes = new Set([
   'admin',
   'dashboard',
